@@ -530,7 +530,7 @@ scan_broken_symlinks() {
   find /home /opt /usr/local -maxdepth 8 -xtype l 2>/dev/null > "$out" || true
   local count; count=$(wc -l < "$out")
   if (( count > 0 )); then
-    echo "Broken symlinks|${count}|$(_scan_size_of "$out")"
+    echo "Broken symlinks|${count}|$(_scan_size_of "$out")|${out}"
   fi
 }
 
@@ -541,7 +541,7 @@ scan_backup_files() {
     -type f 2>/dev/null > "$out" || true
   local count; count=$(wc -l < "$out")
   if (( count > 0 )); then
-    echo "Backup files (*.bak *.old *.orig *~ *.swp)|${count}|$(_scan_size_of "$out")"
+    echo "Backup files (*.bak *.old *.orig *~ *.swp)|${count}|$(_scan_size_of "$out")|${out}"
   fi
 }
 
@@ -551,7 +551,7 @@ scan_node_modules() {
   local count; count=$(wc -l < "$out")
   if (( count > 0 )); then
     local size; size=$(du -shc --files0-from=<(tr '\n' '\0' < "$out") 2>/dev/null | tail -1 | cut -f1 || echo '?')
-    echo "node_modules not accessed in 60+ days|${count}|${size}"
+    echo "node_modules not accessed in 60+ days|${count}|${size}|${out}"
   fi
 }
 
@@ -563,7 +563,7 @@ scan_pycache() {
   local count; count=$(wc -l < "$out")
   if (( count > 0 )); then
     local size; size=$(du -shc --files0-from=<(tr '\n' '\0' < "$out") 2>/dev/null | tail -1 | cut -f1 || echo '?')
-    echo "Python cache (__pycache__ and *.pyc)|${count}|${size}"
+    echo "Python cache (__pycache__ and *.pyc)|${count}|${size}|${out}"
   fi
 }
 
@@ -576,7 +576,7 @@ scan_large_old_files() {
   local count; count=$(wc -l < "$out")
   if (( count > 0 )); then
     local size; size=$(du -shc --files0-from=<(tr '\n' '\0' < "$out") 2>/dev/null | tail -1 | cut -f1 || echo '?')
-    echo "Files >100 MB not accessed in 30+ days|${count}|${size}"
+    echo "Files >100 MB not accessed in 30+ days|${count}|${size}|${out}"
   fi
 }
 
@@ -585,7 +585,7 @@ scan_empty_dirs() {
   find /home -mindepth 1 -maxdepth 6 -type d -empty 2>/dev/null > "$out" || true
   local count; count=$(wc -l < "$out")
   if (( count > 0 )); then
-    echo "Empty directories in /home|${count}|0B"
+    echo "Empty directories in /home|${count}|0B|${out}"
   fi
 }
 
@@ -598,6 +598,48 @@ run_scan() {
   line=$(scan_pycache)         || true; [[ -n "$line" ]] && echo "$line" || true
   line=$(scan_large_old_files) || true; [[ -n "$line" ]] && echo "$line" || true
   line=$(scan_empty_dirs)      || true; [[ -n "$line" ]] && echo "$line" || true
+}
+
+tui_scan_detail() {
+  local label="$1" tmpfile="$2"
+  local -a paths=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && paths+=("$p")
+  done < "$tmpfile"
+
+  local total=${#paths[@]}
+  local page_size=14
+  local offset=0
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}${label}${NC}   ${DIM}${total} items${NC}\n"
+
+    local end=$(( offset + page_size ))
+    (( end > total )) && end=$total
+
+    for (( i=offset; i<end; i++ )); do
+      local p="${paths[$i]}"
+      local meta
+      if [[ -d "$p" ]]; then
+        meta=$(du -sh "$p" 2>/dev/null | cut -f1 || echo '?')
+        echo -e "  ${DIM}$(printf '%4d' $(( i+1 )))${NC}  ${BLUE}[dir]${NC}  ${p}  ${DIM}${meta}${NC}"
+      else
+        meta=$(du -sh "$p" 2>/dev/null | cut -f1 || echo '?')
+        echo -e "  ${DIM}$(printf '%4d' $(( i+1 )))${NC}  [file] ${p}  ${DIM}${meta}${NC}"
+      fi
+    done
+
+    echo -e "\n  ${DIM}${end}/${total}   ↑↓ scroll   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( offset > 0 )) && (( offset -= page_size )) || true; (( offset < 0 )) && offset=0 || true ;;
+      $'\x1b[B'|j) (( offset + page_size < total )) && (( offset += page_size )) || true ;;
+      q|Q|$'\x1b') return ;;
+    esac
+  done
 }
 
 # Delete all paths in a scan category's tmp file
@@ -642,12 +684,14 @@ tui_scan() {
   local -a labels=()
   local -a counts=()
   local -a sizes=()
+  local -a tmpfiles=()
   local -a selected=()
 
-  while IFS='|' read -r label count size; do
+  while IFS='|' read -r label count size tmpfile; do
     labels+=("$label")
     counts+=("$count")
     sizes+=("$size")
+    tmpfiles+=("$tmpfile")
     selected+=(false)
   done < <(run_scan)
 
@@ -669,7 +713,7 @@ tui_scan() {
   while true; do
     tui_clear
     tui_header
-    echo -e "  ${BOLD}Filesystem scan${NC}   ${DIM}Space toggle · d delete selected · q back${NC}\n"
+    echo -e "  ${BOLD}Filesystem scan${NC}   ${DIM}Enter details · Space toggle · d delete · q back${NC}\n"
 
     for (( i=0; i<n; i++ )); do
       local mark; [[ "${selected[$i]}" == true ]] && mark="${RED}✓${NC}" || mark=" "
@@ -684,12 +728,15 @@ tui_scan() {
     # Count selected
     local sel_count=0
     for s in "${selected[@]}"; do [[ "$s" == true ]] && (( sel_count++ )) || true; done
-    echo -e "\n  ${DIM}↑↓ navigate   Space toggle   d delete (${sel_count} selected)   q back${NC}"
+    echo -e "\n  ${DIM}↑↓ navigate   Enter details   Space toggle   d delete (${sel_count} selected)   q back${NC}"
 
     local key; key=$(tui_read_key)
     case "$key" in
       $'\x1b[A'|k) (( cursor > 0 ))   && (( cursor-- )) || true ;;
       $'\x1b[B'|j) (( cursor < n-1 )) && (( cursor++ )) || true ;;
+      ''|$'\n'|$'\r')
+        tui_scan_detail "${labels[$cursor]}" "${tmpfiles[$cursor]}"
+        ;;
       ' ')
         [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true
         ;;
@@ -1229,7 +1276,7 @@ parse_args() {
         touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/cleanux.log"
         echo -e "\n${BOLD}Filesystem scan${NC}\n"
         echo -e "${DIM}Scanning...${NC}\n"
-        run_scan | while IFS='|' read -r label count size; do
+        run_scan | while IFS='|' read -r label count size _tmpfile; do
           printf "  ${YELLOW}▸${NC} %-50s ${BOLD}%s${NC} items · %s\n" "$label" "$count" "$size"
         done
         echo ""
