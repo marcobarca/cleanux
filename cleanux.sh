@@ -1026,7 +1026,7 @@ _ai_profile_add() {
   [[ -z "$p_name" ]] && tput civis && return
   echo -e "  ${DIM}Endpoint must include /v1 — e.g. https://api.openai.com/v1 or http://localhost:11434/v1${NC}"
   printf "  Endpoint > "; read -r p_endpoint
-  printf "  API key  > "; read -r -s p_key; echo ""
+  printf "  API key  > "; read -r p_key
   printf "  Model    > "; read -r p_model
   if [[ -n "$mod" ]]; then
     python3 "$mod" --save-profile "$p_name" "$p_endpoint" "$p_key" "$p_model" > /dev/null 2>&1 || \
