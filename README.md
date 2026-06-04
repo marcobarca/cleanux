@@ -1,38 +1,44 @@
 # cleanux
 
-Periodic server cleanup tool for Linux. Frees disk space by pruning Docker build cache, containers, images, journal logs, and package manager caches.
+![ShellCheck](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml/badge.svg)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-## Why
+Periodic server cleanup tool for Linux. One command to free gigabytes: Docker build cache, dev caches, journal logs, snap revisions, core dumps, and more.
 
-On active dev/homelab servers, Docker build cache alone can eat **50+ GB per week**. `cleanux` automates the safe parts and leaves the risky ones opt-in.
+> On active dev/homelab servers, Docker build cache alone can eat **50+ GB per week**.
+
+<!-- demo GIF here -->
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/cleanux/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/marcobarca/cleanux/main/install.sh | sudo bash
 ```
 
-Or clone and install locally:
+Or clone:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/cleanux
-cd cleanux
-sudo bash install.sh
+git clone https://github.com/marcobarca/cleanux
+cd cleanux && sudo bash install.sh
 ```
 
-## Usage
+## Quick start
 
 ```bash
-# Preview what would be freed (no changes made)
+# Preview what would be freed — no changes made
 cleanux --dry-run
 
-# Run cleanup
+# Clean everything (safe defaults)
 sudo cleanux
 
-# Include Docker volumes and apt autoremove
-sudo cleanux --enable-volumes --enable-autoremove
+# Enable all opt-in modules
+sudo cleanux --all
 
-# Silent mode (for cron)
+# Pick modules interactively
+sudo cleanux --interactive
+
+# Silent mode for cron
 sudo cleanux -q
 ```
 
@@ -43,31 +49,109 @@ sudo cleanux -q
 | Docker build cache | ✅ | Largest win, fully safe |
 | Docker stopped containers | ✅ | Safe |
 | Docker dangling images | ✅ | Untagged layers only |
-| Docker unused volumes | ❌ opt-in | Enable with `--enable-volumes` |
+| Docker unused volumes | ❌ opt-in | `--enable-volumes` |
 | Journal logs | ✅ | Keeps last 14 days |
-| APT / dnf / pacman cache | ✅ | Downloaded packages cache |
-| APT autoremove | ❌ opt-in | Enable with `--enable-autoremove` |
+| APT / dnf / pacman / brew | ✅ | Package manager cache |
+| APT autoremove | ❌ opt-in | `--enable-autoremove` |
+| npm / yarn / pnpm cache | ✅ | |
+| pip cache | ✅ | |
+| Cargo registry cache | ❌ opt-in | `--enable-cargo` |
+| Go build cache | ❌ opt-in | `--enable-go` |
+| Snap old revisions | ✅ | Disabled revisions only |
+| Core dumps | ✅ | `/var/crash`, `core.*` |
+| /tmp old files | ✅ | Older than 7 days |
+| Thumbnail cache | ❌ opt-in | `--enable-thumbnails` |
+| Brew bundle cleanup | ✅ | macOS only, if Brewfile exists |
+
+## All options
+
+```
+Commands:
+  --schedule [CRON]    Install cron job (default: "0 3 * * 0")
+  --systemd            Install systemd timer (Sun 03:00)
+
+Options:
+  -n, --dry-run            Preview what would be cleaned, without changes
+  -i, --interactive        Choose modules interactively before running
+  -q, --quiet              Suppress output (log file still written)
+  -c, --config FILE        Config file (default: /etc/cleanux.conf)
+      --all                Enable all opt-in modules
+      --all-users          Clean dev caches for all users in /home
+      --since DAYS         Only clean items older than N days
+      --enable-volumes     Docker unused volumes
+      --enable-autoremove  apt autoremove
+      --enable-cargo       Cargo registry cache
+      --enable-go          Go build cache
+      --enable-thumbnails  Thumbnail cache
+      --html-report        Generate HTML report after run
+```
+
+## Scheduling
+
+**cron:**
+```bash
+sudo cleanux --schedule              # every Sunday at 03:00 (default)
+sudo cleanux --schedule "0 2 * * *"  # every day at 02:00
+```
+
+**systemd timer:**
+```bash
+sudo cleanux --systemd
+systemctl status cleanux.timer
+```
 
 ## Configuration
 
-Edit `/etc/cleanux.conf` to override defaults:
+Edit `/etc/cleanux.conf`:
 
 ```bash
-JOURNAL_KEEP_DAYS=14
+# Docker
 DOCKER_VOLUMES=false
-APT_AUTOREMOVE=false
-DISK_THRESHOLD=80   # only run if disk >= 80% full
-LOG_FILE="/var/log/cleanux.log"
+
+# Logs
+JOURNAL_KEEP_DAYS=14
+
+# Dev caches
+CARGO_CACHE=false
+GO_CACHE=false
+
+# Notifications
+WEBHOOK_URL="https://hooks.slack.com/..."   # Slack / Discord
+NOTIFY_EMAIL="you@example.com"
+
+# HTML report
+HTML_REPORT=true
+HTML_REPORT_PATH="/var/log/cleanux-report.html"
+
+# Only run if disk >= N% full
+DISK_THRESHOLD=80
+
+# Log rotation
+LOG_MAX_MB=10
 ```
 
-## Cron
+## Notifications
 
-The installer sets up a weekly cron at Sunday 03:00. To change the schedule:
+cleanux can notify after each run via **Slack**, **Discord**, or **email**:
 
 ```bash
-# Edit /etc/cron.d/cleanux
-# Format: minute hour day month weekday user command
-0 3 * * 0 root /usr/local/bin/cleanux -q
+# Slack / Discord (webhook)
+WEBHOOK_URL="https://hooks.slack.com/services/..."
+
+# Email (requires mail command)
+NOTIFY_EMAIL="you@example.com"
+```
+
+## Plugins
+
+Drop any `.sh` file into `/etc/cleanux.d/` to extend cleanux with custom cleanup modules. Each plugin is sourced before the run.
+
+```bash
+# /etc/cleanux.d/myapp.sh
+clean_myapp() {
+  echo -e "\nMyApp cache"
+  rm -rf /var/myapp/cache/*
+}
 ```
 
 ## Supported systems
@@ -79,7 +163,7 @@ The installer sets up a weekly cron at Sunday 03:00. To change the schedule:
 
 ## Log
 
-Each run is logged to `/var/log/cleanux.log`.
+Each run appended to `/var/log/cleanux.log`. Auto-rotated at 10 MB.
 
 ## License
 
