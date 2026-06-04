@@ -966,53 +966,150 @@ _risk_color() {
   esac
 }
 
+_ai_profile_list() {
+  local mod; mod=$(_ai_module)
+  [[ -z "$mod" ]] && echo "[]" && return
+  python3 "$mod" --list-profiles 2>/dev/null || echo "[]"
+}
+
+_ai_profile_names() {
+  local json="$1"
+  python3 -c "
+import json, sys
+try:
+  profiles = json.loads(sys.argv[1])
+  for p in profiles:
+    print(p.get('name',''))
+except Exception:
+  pass
+" "$json" 2>/dev/null || true
+}
+
+_ai_profile_model() {
+  local json="$1" name="$2"
+  python3 -c "
+import json, sys
+try:
+  for p in json.loads(sys.argv[1]):
+    if p.get('name') == sys.argv[2]:
+      print(p.get('model',''))
+      break
+except Exception:
+  pass
+" "$json" "$name" 2>/dev/null || true
+}
+
+_ai_profile_activate() {
+  local name="$1"
+  local mod; mod=$(_ai_module)
+  [[ -z "$mod" ]] && warn "AI module not found" && return
+  local result; result=$(python3 "$mod" --load-profile "$name" 2>/dev/null) || true
+  local status; status=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('status',''))" "$result" 2>/dev/null) || true
+  if [[ "$status" != "ok" ]]; then
+    warn "Could not load profile '$name'"
+    return
+  fi
+  AI_ENDPOINT=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('endpoint',''))" "$result" 2>/dev/null) || true
+  AI_API_KEY=$(python3  -c "import json,sys; print(json.loads(sys.argv[1]).get('key',''))"      "$result" 2>/dev/null) || true
+  AI_MODEL=$(python3    -c "import json,sys; print(json.loads(sys.argv[1]).get('model',''))"    "$result" 2>/dev/null) || true
+  conf_set AI_ENDPOINT "\"${AI_ENDPOINT}\""
+  conf_set AI_API_KEY  "\"${AI_API_KEY}\""
+  conf_set AI_MODEL    "\"${AI_MODEL}\""
+}
+
+_ai_profile_add() {
+  local mod; mod=$(_ai_module)
+  tput cnorm
+  echo ""
+  echo -e "  ${BOLD}New profile${NC}\n"
+  printf "  Name     > "; read -r p_name
+  [[ -z "$p_name" ]] && tput civis && return
+  printf "  Endpoint > "; read -r p_endpoint
+  printf "  API key  > "; read -r -s p_key; echo ""
+  printf "  Model    > "; read -r p_model
+  if [[ -n "$mod" ]]; then
+    python3 "$mod" --save-profile "$p_name" "$p_endpoint" "$p_key" "$p_model" > /dev/null 2>&1 || \
+      warn "Could not save profile (run as root?)"
+  fi
+  # activate it immediately
+  AI_ENDPOINT="$p_endpoint"; AI_API_KEY="$p_key"; AI_MODEL="$p_model"
+  conf_set AI_ENDPOINT "\"${AI_ENDPOINT}\""
+  conf_set AI_API_KEY  "\"${AI_API_KEY}\""
+  conf_set AI_MODEL    "\"${AI_MODEL}\""
+  tui_flash "Profile '${p_name}' saved and active"
+  tput civis
+}
+
 tui_ai_config() {
-  local -a items=("Set endpoint" "Set API key" "Set model" "Clear all" "Back")
   local cursor=0
-  local n=${#items[@]}
 
   while true; do
+    local profiles_json; profiles_json=$(_ai_profile_list)
+    local -a prof_names=()
+    while IFS= read -r name; do
+      [[ -n "$name" ]] && prof_names+=("$name")
+    done < <(_ai_profile_names "$profiles_json")
+    local prof_count=${#prof_names[@]}
+    # items: profiles + separator + "Add profile" + "Back"
+    local total=$(( prof_count + 2 ))
+
     tui_clear
     tui_header
     echo -e "  ${BOLD}Configure AI${NC}\n"
-    echo -e "  Endpoint : ${DIM}${AI_ENDPOINT:-not set}${NC}"
-    echo -e "  API key  : ${DIM}${AI_API_KEY:+(set)}${AI_API_KEY:-not set}${NC}"
-    echo -e "  Model    : ${DIM}${AI_MODEL:-not set}${NC}\n"
-    echo -e "  ${DIM}OpenAI  → https://api.openai.com/v1 · gpt-4o-mini${NC}"
-    echo -e "  ${DIM}Ollama  → http://localhost:11434/v1  · llama3 (no key)${NC}\n"
-    [[ $EUID -ne 0 ]] && echo -e "  ${YELLOW}⚠${NC}  ${DIM}Not root — settings apply to this session only${NC}\n"
+    [[ -n "$AI_MODEL" ]] && echo -e "  Active: ${GREEN}${AI_MODEL}${NC}  ${DIM}${AI_ENDPOINT}${NC}\n" \
+                         || echo -e "  ${DIM}No active profile${NC}\n"
+    [[ $EUID -ne 0 ]] && echo -e "  ${YELLOW}⚠${NC}  ${DIM}Not root — profile activation applies to session only${NC}\n"
 
-    for (( i=0; i<n; i++ )); do
+    # Draw profile list
+    for (( i=0; i<prof_count; i++ )); do
+      local model; model=$(_ai_profile_model "$profiles_json" "${prof_names[$i]}")
+      local active_mark=""
+      [[ "$AI_MODEL" == "$model" ]] && active_mark=" ${GREEN}●${NC}"
       if (( i == cursor )); then
-        echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+        echo -e "  ${GREEN}❯${NC} ${BOLD}${prof_names[$i]}${NC}${active_mark}  ${DIM}${model}${NC}"
       else
-        echo -e "    ${items[$i]}"
+        echo -e "    ${prof_names[$i]}${active_mark}  ${DIM}${model}${NC}"
       fi
     done
-    echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
+
+    # Separator + fixed items
+    (( prof_count > 0 )) && echo -e "    ${DIM}──────────────────────${NC}"
+    local add_idx=$prof_count
+    local back_idx=$(( prof_count + 1 ))
+    if (( cursor == add_idx )); then
+      echo -e "  ${GREEN}❯${NC} ${BOLD}Add profile${NC}"
+    else
+      echo -e "    Add profile"
+    fi
+    if (( cursor == back_idx )); then
+      echo -e "  ${GREEN}❯${NC} ${BOLD}Back${NC}"
+    else
+      echo -e "    Back"
+    fi
+
+    echo -e "\n  ${DIM}↑↓ navigate   Enter select   d delete profile   q back${NC}"
 
     local key; key=$(tui_read_key)
     case "$key" in
-      $'\x1b[A'|k) (( cursor > 0 ))   && (( cursor-- )) || true ;;
-      $'\x1b[B'|j) (( cursor < n-1 )) && (( cursor++ )) || true ;;
+      $'\x1b[A'|k) (( cursor > 0 ))          && (( cursor-- )) || true ;;
+      $'\x1b[B'|j) (( cursor < total-1 ))     && (( cursor++ )) || true ;;
       ''|$'\n'|$'\r')
-        tput cnorm
-        case $cursor in
-          0) echo -e "\n  ${BOLD}Endpoint${NC} (e.g. https://api.openai.com/v1):"
-             printf "  > "; read -r AI_ENDPOINT
-             conf_set AI_ENDPOINT "\"${AI_ENDPOINT}\"" ;;
-          1) echo -e "\n  ${BOLD}API key${NC} (leave empty for local models):"
-             printf "  > "; read -r -s AI_API_KEY; echo ""
-             conf_set AI_API_KEY "\"${AI_API_KEY}\"" ;;
-          2) echo -e "\n  ${BOLD}Model${NC} (e.g. gpt-4o-mini, llama3, mistral):"
-             printf "  > "; read -r AI_MODEL
-             conf_set AI_MODEL "\"${AI_MODEL}\"" ;;
-          3) AI_ENDPOINT=""; AI_API_KEY=""; AI_MODEL=""
-             conf_set AI_ENDPOINT '""'; conf_set AI_API_KEY '""'; conf_set AI_MODEL '""'
-             tui_flash "AI config cleared" ;;
-          4) tput civis; return ;;
-        esac
-        tput civis
+        if (( cursor < prof_count )); then
+          _ai_profile_activate "${prof_names[$cursor]}"
+          tui_flash "Profile '${prof_names[$cursor]}' active"
+        elif (( cursor == add_idx )); then
+          _ai_profile_add
+        else
+          return
+        fi
+        ;;
+      d|D)
+        if (( cursor < prof_count )); then
+          local mod; mod=$(_ai_module)
+          [[ -n "$mod" ]] && python3 "$mod" --delete-profile "${prof_names[$cursor]}" > /dev/null 2>&1 || true
+          tui_flash "Profile '${prof_names[$cursor]}' deleted"
+          (( cursor > 0 )) && (( cursor-- )) || true
+        fi
         ;;
       q|Q|$'\x1b') return ;;
     esac

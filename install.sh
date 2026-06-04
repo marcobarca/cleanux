@@ -40,6 +40,8 @@ else
   curl -fsSL "$AI_MODULE_URL" -o "$LIB_DIR/ai.py"
 fi
 ok "AI module installed to $LIB_DIR/ai.py"
+mkdir -p /etc/cleanux/profiles
+chmod 700 /etc/cleanux/profiles
 
 # ── Install default config ────────────────────────────────────────────────────
 if [[ ! -f "$CONF_DIR/cleanux.conf" ]]; then

@@ -394,9 +394,95 @@ def load_config(path):
         pass
     return config
 
+# ── Profile management ────────────────────────────────────────────────────────
+
+PROFILES_DIR = "/etc/cleanux/profiles"
+
+def _profile_path(name):
+    slug = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip()
+    slug = slug.replace(" ", "_")
+    return os.path.join(PROFILES_DIR, slug + ".json")
+
+def cmd_list_profiles():
+    profiles = []
+    try:
+        for fname in sorted(os.listdir(PROFILES_DIR)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(PROFILES_DIR, fname)) as f:
+                    p = json.load(f)
+                    profiles.append({
+                        "name":     p.get("name", fname[:-5]),
+                        "endpoint": p.get("endpoint", ""),
+                        "model":    p.get("model", ""),
+                    })
+            except Exception:
+                pass
+    except FileNotFoundError:
+        pass
+    print(json.dumps(profiles, ensure_ascii=False))
+
+def cmd_save_profile(name, endpoint, key, model):
+    os.makedirs(PROFILES_DIR, mode=0o700, exist_ok=True)
+    path = _profile_path(name)
+    profile = {"name": name, "endpoint": endpoint, "key": key, "model": model}
+    with open(path, "w") as f:
+        json.dump(profile, f, ensure_ascii=False, indent=2)
+    print(json.dumps({"status": "ok", "path": path}))
+
+def cmd_load_profile(name):
+    path = _profile_path(name)
+    try:
+        with open(path) as f:
+            p = json.load(f)
+        print(json.dumps({"status": "ok",
+                          "endpoint": p.get("endpoint", ""),
+                          "key":      p.get("key", ""),
+                          "model":    p.get("model", "")}))
+    except FileNotFoundError:
+        print(json.dumps({"status": "error", "message": f"Profile not found: {name}"}))
+
+def cmd_delete_profile(name):
+    path = _profile_path(name)
+    try:
+        os.remove(path)
+        print(json.dumps({"status": "ok"}))
+    except FileNotFoundError:
+        print(json.dumps({"status": "error", "message": f"Profile not found: {name}"}))
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
+    args = sys.argv[1:]
+
+    if args and args[0] == "--list-profiles":
+        cmd_list_profiles()
+        return
+
+    if args and args[0] == "--save-profile":
+        # args: --save-profile NAME ENDPOINT KEY MODEL
+        if len(args) < 5:
+            print(json.dumps({"status": "error", "message": "Usage: --save-profile NAME ENDPOINT KEY MODEL"}))
+            sys.exit(1)
+        cmd_save_profile(args[1], args[2], args[3], args[4])
+        return
+
+    if args and args[0] == "--load-profile":
+        if len(args) < 2:
+            print(json.dumps({"status": "error", "message": "Usage: --load-profile NAME"}))
+            sys.exit(1)
+        cmd_load_profile(args[1])
+        return
+
+    if args and args[0] == "--delete-profile":
+        if len(args) < 2:
+            print(json.dumps({"status": "error", "message": "Usage: --delete-profile NAME"}))
+            sys.exit(1)
+        cmd_delete_profile(args[1])
+        return
+
+    # Default: run AI scan
     conf_path = os.environ.get("CLEANUX_CONF", DEFAULT_CONF)
     config    = load_config(conf_path)
 
