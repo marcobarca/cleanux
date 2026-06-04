@@ -4,9 +4,11 @@
 set -euo pipefail
 
 INSTALL_DIR="/usr/local/bin"
+LIB_DIR="/usr/local/lib/cleanux"
 CONF_DIR="/etc"
 SCRIPT_URL="https://raw.githubusercontent.com/marcobarca/cleanux/main/cleanux.sh"
 CONF_URL="https://raw.githubusercontent.com/marcobarca/cleanux/main/cleanux.conf"
+AI_MODULE_URL="https://raw.githubusercontent.com/marcobarca/cleanux/main/lib/cleanux_ai.py"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -28,6 +30,16 @@ fi
 
 chmod +x "$INSTALL_DIR/cleanux"
 ok "Installed to $INSTALL_DIR/cleanux"
+
+# ── Install AI module ─────────────────────────────────────────────────────────
+info "Installing AI module..."
+mkdir -p "$LIB_DIR"
+if [[ -f "lib/cleanux_ai.py" ]]; then
+  cp lib/cleanux_ai.py "$LIB_DIR/ai.py"
+else
+  curl -fsSL "$AI_MODULE_URL" -o "$LIB_DIR/ai.py"
+fi
+ok "AI module installed to $LIB_DIR/ai.py"
 
 # ── Install default config ────────────────────────────────────────────────────
 if [[ ! -f "$CONF_DIR/cleanux.conf" ]]; then

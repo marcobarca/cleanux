@@ -887,139 +887,83 @@ tui_main() {
 
 # ── AI scan ───────────────────────────────────────────────────────────────────
 
-ai_collect_context() {
-  echo "=== DISK USAGE ==="
-  df -h / 2>/dev/null | tail -1
-  echo ""
+readonly AI_MODULE="/usr/local/lib/cleanux/ai.py"
 
-  echo "=== TOP DIRECTORIES BY SIZE (/) ==="
-  du -sh /home /opt /var /tmp /root 2>/dev/null | sort -rh | head -10
-  echo ""
-
-  echo "=== LARGEST FILES (>50MB, not accessed in 7d) ==="
-  find /home /opt /var /tmp -maxdepth 6 -type f -size +50M -atime +7 \
-    ! -path "*/proc/*" ! -path "*/sys/*" \
-    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -20
-  echo ""
-
-  echo "=== DOCKER ==="
-  if has_cmd docker; then
-    docker system df 2>/dev/null || echo "(docker not available)"
+_ai_module() {
+  if [[ -f "$AI_MODULE" ]]; then
+    echo "$AI_MODULE"
+  elif [[ -f "$(dirname "$(command -v cleanux 2>/dev/null)")/cleanux-ai" ]]; then
+    echo "$(dirname "$(command -v cleanux)")/cleanux-ai"
   else
-    echo "(docker not installed)"
+    echo ""
   fi
-  echo ""
-
-  echo "=== JOURNAL LOGS ==="
-  journalctl --disk-usage 2>/dev/null || echo "(journalctl not available)"
-  echo ""
-
-  echo "=== APT CACHE ==="
-  du -sh /var/cache/apt/archives 2>/dev/null || echo "(not available)"
-  echo ""
-
-  echo "=== SNAP REVISIONS ==="
-  if has_cmd snap; then
-    snap list --all 2>/dev/null | awk 'NR>1 && /disabled/{print}' | head -10
-  else
-    echo "(snap not installed)"
-  fi
-  echo ""
-
-  echo "=== LARGE LOG FILES ==="
-  find /var/log -type f -size +10M \
-    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
-  echo ""
-
-  echo "=== OLD TMP FILES ==="
-  find /tmp -maxdepth 2 -atime +7 \
-    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
-  echo ""
-
-  echo "=== NODE_MODULES ==="
-  find /home /opt -name node_modules -type d -prune \
-    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
-  echo ""
-
-  echo "=== PYTHON CACHE ==="
-  find /home -name "__pycache__" -type d -prune \
-    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
-  echo ""
 }
 
-ai_query() {
-  local context="$1"
-  local endpoint="${AI_ENDPOINT:-https://api.openai.com/v1}"
-  local model="${AI_MODEL:-gpt-4o-mini}"
-
-  # strip trailing slash
-  endpoint="${endpoint%/}"
-
-  local prompt
-  prompt="You are a Linux system administrator. Analyze the following system information and provide concise, specific recommendations on what to clean up to free disk space.
-
-For each recommendation:
-- Be specific about the path or command
-- Estimate the space that could be recovered
-- Briefly explain why it is safe (or risky) to remove
-- Sort by impact (most space first)
-
-Do not use markdown headers or bullet symbols — use plain text with numbered points.
-Limit your response to the top 8 recommendations.
-
-SYSTEM INFO:
-${context}"
-
-  local payload
-  payload=$(printf '%s' "$prompt" | python3 -c "
-import sys, json
-content = sys.stdin.read()
-print(json.dumps({
-  'model': '${model}',
-  'messages': [{'role': 'user', 'content': content}],
-  'max_tokens': 1024,
-  'temperature': 0.2
-}))
-" 2>/dev/null)
-
-  if [[ -z "$payload" ]]; then
-    echo "ERROR: python3 is required to build the API request"
+_ai_run() {
+  local mod; mod=$(_ai_module)
+  if [[ -z "$mod" ]]; then
+    echo '{"status":"error","message":"cleanux AI module not found — reinstall or run sudo cleanux --update"}'
     return 0
   fi
+  CLEANUX_CONF="$CONF_FILE" python3 "$mod" 2>/dev/null || \
+    echo '{"status":"error","message":"cleanux-ai exited with an error — check python3 is available"}'
+}
 
-  local http_response
-  http_response=$(curl -s \
-    -H "Content-Type: application/json" \
-    ${AI_API_KEY:+-H "Authorization: Bearer ${AI_API_KEY}"} \
-    -d "$payload" \
-    "${endpoint}/chat/completions" 2>&1) || true
-
-  if [[ -z "$http_response" ]]; then
-    echo "ERROR: No response from endpoint — check AI_ENDPOINT and network connectivity"
-    return 0
-  fi
-
-  local content
-  content=$(printf '%s' "$http_response" | python3 -c "
-import sys, json
+# Parse a field from JSON output using python3
+_ai_field() {
+  local json="$1" field="$2"
+  python3 -c "
+import json, sys
 try:
-  r = json.load(sys.stdin)
-  if 'error' in r:
-    msg = r['error'].get('message', str(r['error'])) if isinstance(r['error'], dict) else str(r['error'])
-    print('ERROR: ' + msg)
-  else:
-    print(r['choices'][0]['message']['content'])
-except Exception as e:
-  print('ERROR: Could not parse response — ' + str(e))
-  import sys; sys.stderr.write(sys.stdin.read() + '\n')
-" 2>/dev/null) || true
+  d = json.loads(sys.argv[1])
+  print(d.get('$field', ''))
+except Exception:
+  pass
+" "$json" 2>/dev/null || true
+}
 
-  if [[ -z "$content" ]]; then
-    echo "ERROR: Could not parse API response — raw: ${http_response:0:200}"
-    return 0
-  fi
+_ai_rec_field() {
+  local json="$1" idx="$2" field="$3"
+  python3 -c "
+import json, sys
+try:
+  d = json.loads(sys.argv[1])
+  r = d.get('recommendations', [])[int(sys.argv[2])]
+  print(r.get('$field', ''))
+except Exception:
+  pass
+" "$json" "$idx" 2>/dev/null || true
+}
 
-  echo "$content"
+_ai_rec_count() {
+  local json="$1"
+  python3 -c "
+import json, sys
+try:
+  print(len(json.loads(sys.argv[1]).get('recommendations', [])))
+except Exception:
+  print(0)
+" "$json" 2>/dev/null || echo 0
+}
+
+_human_bytes_py() {
+  python3 -c "
+b = int('$1' or 0)
+if b >= 1073741824:   print(f'{b/1073741824:.1f} GB')
+elif b >= 1048576:    print(f'{b/1048576:.1f} MB')
+elif b > 0:           print(f'{b/1024:.0f} KB')
+else:                 print('?')
+" 2>/dev/null || echo '?'
+}
+
+_risk_color() {
+  case "$1" in
+    safe)   echo "$GREEN" ;;
+    low)    echo "$GREEN" ;;
+    medium) echo "$YELLOW" ;;
+    high)   echo "$RED" ;;
+    *)      echo "$NC" ;;
+  esac
 }
 
 tui_ai_config() {
@@ -1030,12 +974,12 @@ tui_ai_config() {
   while true; do
     tui_clear
     tui_header
-    echo -e "  ${BOLD}Configure AI scan${NC}\n"
+    echo -e "  ${BOLD}Configure AI${NC}\n"
     echo -e "  Endpoint : ${DIM}${AI_ENDPOINT:-not set}${NC}"
     echo -e "  API key  : ${DIM}${AI_API_KEY:+(set)}${AI_API_KEY:-not set}${NC}"
     echo -e "  Model    : ${DIM}${AI_MODEL:-not set}${NC}\n"
     echo -e "  ${DIM}OpenAI  → https://api.openai.com/v1 · gpt-4o-mini${NC}"
-    echo -e "  ${DIM}Ollama  → http://localhost:11434/v1  · llama3 (no key needed)${NC}\n"
+    echo -e "  ${DIM}Ollama  → http://localhost:11434/v1  · llama3 (no key)${NC}\n"
     [[ $EUID -ne 0 ]] && echo -e "  ${YELLOW}⚠${NC}  ${DIM}Not root — settings apply to this session only${NC}\n"
 
     for (( i=0; i<n; i++ )); do
@@ -1082,60 +1026,152 @@ tui_ai_scan() {
 
   if [[ -z "$AI_ENDPOINT" ]]; then
     echo -e "  ${YELLOW}⚠${NC}  No AI endpoint configured."
-    echo -e "  Go to ${BOLD}Configure AI${NC} from the main menu to set one.\n"
+    echo -e "  Go to ${BOLD}Configure → AI${NC} to set one.\n"
     echo -e "  ${DIM}Press any key to go back${NC}"
     tui_read_key > /dev/null
     return
   fi
 
-  echo -e "  ${DIM}Collecting system information...${NC}"
-  local context
-  context=$(ai_collect_context 2>/dev/null) || true
+  echo -e "  ${DIM}AI is analyzing your system — this may take 20-60 seconds...${NC}"
+  echo -e "  ${DIM}Model: ${AI_MODEL:-gpt-4o-mini} · ${AI_ENDPOINT}${NC}\n"
 
-  echo -e "  ${DIM}Querying ${AI_MODEL:-model} at ${AI_ENDPOINT}...${NC}"
-  echo -e "  ${YELLOW}⚠${NC}  ${DIM}System paths and sizes will be sent to the configured endpoint.${NC}\n"
+  local raw
+  raw=$(_ai_run) || true
 
-  local response
-  response=$(ai_query "$context") || true
+  local status; status=$(_ai_field "$raw" "status")
 
-  if [[ "$response" == ERROR:* ]]; then
+  if [[ "$status" != "ok" ]]; then
+    local msg; msg=$(_ai_field "$raw" "message")
     tui_clear
     tui_header
     echo -e "  ${BOLD}AI scan${NC}\n"
-    echo -e "  ${RED}✖${NC}  ${response#ERROR: }\n"
+    echo -e "  ${RED}✖${NC}  ${msg:-Unknown error}\n"
     echo -e "  ${DIM}Press any key to go back${NC}"
     tui_read_key > /dev/null
     return
   fi
 
-  # Split response into lines for scrollable display
-  local -a lines=()
-  while IFS= read -r line; do
-    lines+=("$line")
-  done <<< "$response"
+  local summary;  summary=$(_ai_field  "$raw" "summary")
+  local rec_count; rec_count=$(_ai_rec_count "$raw")
 
-  local total=${#lines[@]}
-  local page_size=16
-  local offset=0
+  if (( rec_count == 0 )); then
+    tui_clear; tui_header
+    echo -e "  ${BOLD}AI scan${NC}\n"
+    echo -e "  ${GREEN}✔${NC}  ${summary}\n"
+    echo -e "  No cleanup actions suggested.\n"
+    echo -e "  ${DIM}Press any key to go back${NC}"
+    tui_read_key > /dev/null
+    return
+  fi
+
+  # Load recommendations into arrays
+  local -a titles=() explanations=() commands=() risks=() sizes=()
+  local -a selected=()
+  local i
+  for (( i=0; i<rec_count; i++ )); do
+    titles+=("$(_ai_rec_field "$raw" "$i" "title")")
+    explanations+=("$(_ai_rec_field "$raw" "$i" "explanation")")
+    commands+=("$(_ai_rec_field "$raw" "$i" "command")")
+    risks+=("$(_ai_rec_field "$raw" "$i" "risk")")
+    local bytes; bytes=$(_ai_rec_field "$raw" "$i" "estimated_bytes")
+    sizes+=("$(_human_bytes_py "$bytes")")
+    selected+=(false)
+  done
+
+  local cursor=0
 
   while true; do
     tui_clear
     tui_header
-    echo -e "  ${BOLD}AI scan${NC}   ${DIM}${AI_MODEL:-model} · ${AI_ENDPOINT}${NC}\n"
+    echo -e "  ${BOLD}AI scan${NC}   ${DIM}${AI_MODEL:-model}${NC}\n"
+    echo -e "  ${DIM}${summary}${NC}\n"
 
-    local end=$(( offset + page_size ))
-    (( end > total )) && end=$total
-
-    for (( i=offset; i<end; i++ )); do
-      echo -e "  ${lines[$i]}"
+    for (( i=0; i<rec_count; i++ )); do
+      local mark; [[ "${selected[$i]}" == true ]] && mark="${GREEN}✓${NC}" || mark=" "
+      local rc; rc=$(_risk_color "${risks[$i]}")
+      if (( i == cursor )); then
+        echo -e "  ${GREEN}❯${NC} [${mark}] ${BOLD}${titles[$i]}${NC}"
+      else
+        echo -e "    [${mark}] ${titles[$i]}"
+      fi
+      echo -e "         ${DIM}${sizes[$i]} · risk: ${rc}${risks[$i]}${NC}"
     done
 
-    echo -e "\n  ${DIM}${end}/${total} lines   ↑↓ scroll   q back${NC}"
+    local sel_count=0
+    for s in "${selected[@]}"; do [[ "$s" == true ]] && (( sel_count++ )) || true; done
+    echo -e "\n  ${DIM}↑↓ navigate   Enter details   Space toggle   x execute (${sel_count} selected)   q back${NC}"
 
     local key; key=$(tui_read_key)
     case "$key" in
-      $'\x1b[A'|k) (( offset > 0 )) && (( offset -= page_size )) || true; (( offset < 0 )) && offset=0 || true ;;
-      $'\x1b[B'|j) (( offset + page_size < total )) && (( offset += page_size )) || true ;;
+      $'\x1b[A'|k) (( cursor > 0 ))          && (( cursor-- )) || true ;;
+      $'\x1b[B'|j) (( cursor < rec_count-1 )) && (( cursor++ )) || true ;;
+      ' ') [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true ;;
+      ''|$'\n'|$'\r')
+        # Detail view
+        tui_clear; tui_header
+        echo -e "  ${BOLD}${titles[$cursor]}${NC}\n"
+        local rc; rc=$(_risk_color "${risks[$cursor]}")
+        echo -e "  Risk     : ${rc}${risks[$cursor]}${NC}"
+        echo -e "  Est. size: ${DIM}${sizes[$cursor]}${NC}\n"
+        echo -e "  ${explanations[$cursor]}\n"
+        [[ -n "${commands[$cursor]}" ]] && echo -e "  ${DIM}Command: ${commands[$cursor]}${NC}\n"
+        echo -e "  ${DIM}Space to toggle selection   q back${NC}"
+        local dk; dk=$(tui_read_key)
+        [[ "$dk" == ' ' ]] && { [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true; }
+        ;;
+      x|X)
+        (( sel_count == 0 )) && continue
+        # Confirm screen
+        tui_clear; tui_header
+        echo -e "  ${BOLD}Confirm AI-recommended actions${NC}\n"
+        for (( i=0; i<rec_count; i++ )); do
+          [[ "${selected[$i]}" == false ]] && continue
+          local rc; rc=$(_risk_color "${risks[$i]}")
+          echo -e "  ${GREEN}✓${NC} ${titles[$i]}  ${DIM}${sizes[$i]} · ${rc}${risks[$i]}${NC}"
+          [[ -n "${commands[$i]}" ]] && echo -e "    ${DIM}→ ${commands[$i]}${NC}"
+        done
+        echo -e "\n  ${YELLOW}This cannot be undone.${NC}"
+        echo -e "  ${DIM}Press Enter to confirm, q to cancel${NC}\n"
+        local ck; ck=$(tui_read_key)
+        if [[ "$ck" == '' || "$ck" == $'\n' || "$ck" == $'\r' ]]; then
+          tput cnorm
+          echo ""
+          log "=== AI scan execution started ==="
+          for (( i=0; i<rec_count; i++ )); do
+            [[ "${selected[$i]}" == false ]] && continue
+            info "Running: ${titles[$i]}"
+            if [[ -n "${commands[$i]}" ]]; then
+              if eval "${commands[$i]}" >> "$LOG_FILE" 2>&1; then
+                ok "${titles[$i]}"
+              else
+                warn "${titles[$i]} — command failed (see $LOG_FILE)"
+              fi
+            else
+              # paths-only deletion
+              local paths_json
+              paths_json=$(python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+paths = d.get('recommendations', [])[${i}].get('paths', [])
+print('\n'.join(paths))
+" "$raw" 2>/dev/null) || true
+              while IFS= read -r p; do
+                [[ -z "$p" ]] && continue
+                if [[ -d "$p" ]]; then
+                  rm -rf "$p" && log "AI: removed dir $p" || warn "Failed: $p"
+                else
+                  rm -f  "$p" && log "AI: removed file $p" || warn "Failed: $p"
+                fi
+              done <<< "$paths_json"
+              ok "${titles[$i]}"
+            fi
+          done
+          log "=== AI scan execution done ==="
+          tui_flash "Done"
+          tput civis
+          return
+        fi
+        ;;
       q|Q|$'\x1b') return ;;
     esac
   done
@@ -1184,6 +1220,17 @@ cmd_update() {
   cp "$tmp" "$bin"
   chmod +x "$bin"
   rm -f "$tmp"
+
+  # Update AI module
+  local ai_mod="/usr/local/lib/cleanux/ai.py"
+  local ai_url="https://raw.githubusercontent.com/marcobarca/cleanux/main/lib/cleanux_ai.py"
+  if [[ -f "$ai_mod" ]] && has_cmd curl; then
+    local tmp_ai; tmp_ai=$(mktemp)
+    if curl -fsSL "$ai_url" -o "$tmp_ai" 2>/dev/null; then
+      cp "$tmp_ai" "$ai_mod"
+    fi
+    rm -f "$tmp_ai"
+  fi
 
   ok "Updated to v${remote_version}"
 }
