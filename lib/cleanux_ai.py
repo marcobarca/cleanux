@@ -20,20 +20,8 @@ from pathlib import Path
 DEFAULT_CONF   = "/etc/cleanux.conf"
 MAX_TOOL_ROUNDS = 10
 
-SYSTEM_PROMPT = (
-    "You are a Linux system administrator assistant. "
-    "Your job is to do a full health scan of this machine covering two areas:\n\n"
-    "  1. DISK — identify space that can be safely reclaimed (caches, logs, build artefacts, etc.)\n"
-    "  2. LOAD & PROCESSES — identify heavyweight, orphaned, or misbehaving processes and services "
-    "(high CPU/RAM consumers that look abnormal, zombie processes, services crashing and restarting "
-    "in a loop, failed systemd units, processes leaking file descriptors, etc.)\n\n"
-    "Workflow:\n"
-    "  - Start with disk_overview and system_load to get an overall picture.\n"
-    "  - Use disk tools (large_files, docker_info, journal_logs, dev_caches, etc.) for storage.\n"
-    "  - Use load tools (top_processes, zombie_processes, systemd_services, open_files) for processes.\n"
-    "  - Call both sort_by=cpu and sort_by=memory variants of top_processes.\n"
-    "  - When you have enough data, call submit_recommendations.\n\n"
-    "For each recommendation, write a thorough explanation covering:\n"
+_EXPLANATION_GUIDE = (
+    "For each recommendation write a thorough explanation covering:\n"
     "  1. What the service, process, or component is and what it does\n"
     "  2. Why it is accumulating space or consuming excessive resources\n"
     "  3. Who or what creates/runs it\n"
@@ -41,11 +29,39 @@ SYSTEM_PROMPT = (
     "  5. Any caveats\n\n"
     "Write explanations as flowing prose (2-5 sentences). "
     "Assume the reader is a developer who knows Linux basics.\n\n"
+)
+
+_RISK_GUIDE = (
     "Risk levels:\n"
     "  safe   — always fine (caches, build artefacts, clearly orphaned processes)\n"
     "  low    — very likely fine, minimal side effects\n"
     "  medium — review before acting, could affect running services\n"
     "  high   — destructive or service-interrupting, requires explicit confirmation\n"
+)
+
+DISK_PROMPT = (
+    "You are a Linux system administrator assistant. "
+    "Your job is to identify disk space that can be safely reclaimed on this machine.\n\n"
+    "Workflow:\n"
+    "  - Start with disk_overview to get an overall picture of usage.\n"
+    "  - Drill into areas with large_files, docker_info, journal_logs, package_cache, "
+    "dev_caches, snap_revisions, and temp_files as appropriate.\n"
+    "  - When you have enough data, call submit_recommendations with storage cleanup actions only.\n\n"
+    + _EXPLANATION_GUIDE + _RISK_GUIDE
+)
+
+HEALTH_PROMPT = (
+    "You are a Linux system administrator assistant. "
+    "Your job is to analyse the runtime health of this machine: CPU load, memory pressure, "
+    "misbehaving or orphaned processes, failing systemd services, and resource leaks.\n\n"
+    "Workflow:\n"
+    "  - Start with system_load to get baseline metrics.\n"
+    "  - Call top_processes with sort_by=cpu AND sort_by=memory.\n"
+    "  - Call zombie_processes, systemd_services, and open_files.\n"
+    "  - Focus on anomalies: processes consuming abnormal CPU/RAM, services restarting in a loop, "
+    "failed units, zombie accumulation, fd leaks. Do NOT flag healthy, expected workloads.\n"
+    "  - When you have enough data, call submit_recommendations with process/service findings only.\n\n"
+    + _EXPLANATION_GUIDE + _RISK_GUIDE
 )
 
 # ── Shell helpers ─────────────────────────────────────────────────────────────
@@ -236,7 +252,42 @@ TOOL_FUNCS = {
     "open_files":       tool_open_files,
 }
 
-TOOL_DEFINITIONS = [
+_SUBMIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_recommendations",
+        "description": "Submit the final recommendations. Call this once you have gathered enough data — it ends the analysis.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "2-3 sentence summary of findings",
+                },
+                "recommendations": {
+                    "type": "array",
+                    "description": "Recommended actions sorted by impact. Include a 'category' field.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title":           {"type": "string"},
+                            "category":        {"type": "string", "enum": ["disk", "process", "service", "memory"]},
+                            "explanation":     {"type": "string", "description": "Full explanation: what it is, why it accumulates/runs, who creates it, impact of the action, caveats. 2-5 sentences."},
+                            "command":         {"type": "string"},
+                            "paths":           {"type": "array", "items": {"type": "string"}},
+                            "estimated_bytes": {"type": "integer"},
+                            "risk":            {"type": "string", "enum": ["safe", "low", "medium", "high"]},
+                        },
+                        "required": ["title", "category", "explanation", "risk", "estimated_bytes"],
+                    },
+                },
+            },
+            "required": ["summary", "recommendations"],
+        },
+    },
+}
+
+DISK_TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
@@ -321,6 +372,10 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    _SUBMIT_TOOL,
+]
+
+HEALTH_TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
@@ -374,47 +429,7 @@ TOOL_DEFINITIONS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "submit_recommendations",
-            "description": (
-                "Submit the final recommendations. "
-                "Call this once you have gathered enough data — it ends the analysis."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "2-3 sentence summary covering both disk and load findings",
-                    },
-                    "recommendations": {
-                        "type": "array",
-                        "description": (
-                            "All recommended actions — disk cleanup AND load/process fixes. "
-                            "Sort by impact: disk items by estimated_bytes desc, process items by severity. "
-                            "Include a 'category' field to distinguish them."
-                        ),
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title":           {"type": "string", "description": "Short action title"},
-                                "category":        {"type": "string", "enum": ["disk", "process", "service", "memory"], "description": "Type of recommendation"},
-                                "explanation":     {"type": "string", "description": "Full explanation: what the service/component is, what these files or processes are and why they accumulate or run, who creates and uses them, what happens after the action (what is lost vs what regenerates or recovers), and any caveats. 2-5 sentences of prose."},
-                                "command":         {"type": "string", "description": "Shell command to execute (kill, systemctl stop/disable, rm, docker prune, etc.)"},
-                                "paths":           {"type": "array", "items": {"type": "string"}, "description": "Specific paths to delete (max 20, disk category only)"},
-                                "estimated_bytes": {"type": "integer", "description": "Estimated bytes freed (0 for process/service actions)"},
-                                "risk":            {"type": "string", "enum": ["safe", "low", "medium", "high"]},
-                            },
-                            "required": ["title", "category", "explanation", "risk", "estimated_bytes"],
-                        },
-                    },
-                },
-                "required": ["summary", "recommendations"],
-            },
-        },
-    },
+    _SUBMIT_TOOL,
 ]
 
 # ── HTTP client ────────────────────────────────────────────────────────────────
@@ -461,38 +476,50 @@ def _execute_tool(name, args):
 
 # ── AI loop ───────────────────────────────────────────────────────────────────
 
-def run_scan(endpoint, api_key, model):
-    """Run the tool-use loop and return a recommendations dict."""
+def run_scan(endpoint, api_key, model, mode="disk"):
+    """Run the tool-use loop and return a recommendations dict.
+
+    mode: 'disk'   — storage cleanup scan
+          'health' — process/load health scan
+    """
     ep = endpoint.rstrip("/")
-    # Normalise: strip accidental /chat/completions suffix the user may have pasted
     if ep.endswith("/chat/completions"):
         ep = ep[: -len("/chat/completions")]
 
-    # Azure OpenAI uses a different URL structure and auth header
     azure = ".openai.azure.com" in ep
     if azure:
-        # https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=...
         url = f"{ep}/openai/deployments/{model}/chat/completions?api-version=2024-10-21"
     else:
         url = f"{ep}/chat/completions"
+
+    if mode == "health":
+        system_prompt = HEALTH_PROMPT
+        tool_defs     = HEALTH_TOOL_DEFINITIONS
+        user_msg      = (
+            "Analyse the runtime health of this Linux system. "
+            "Check CPU load, memory pressure, top processes, zombie processes, "
+            "systemd service status, and open file descriptors. "
+            "Flag only genuine anomalies — do not report healthy, expected workloads. "
+            "Call submit_recommendations when done."
+        )
+    else:
+        system_prompt = DISK_PROMPT
+        tool_defs     = DISK_TOOL_DEFINITIONS
+        user_msg      = (
+            "Analyse disk usage on this Linux system and identify what can be safely cleaned up. "
+            "Start with disk_overview, drill into specific areas, "
+            "then call submit_recommendations."
+        )
+
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                "Do a full health scan of this Linux system. "
-                "Check both disk usage (what can be cleaned up) and system load "
-                "(heavy processes, zombies, failing services, anything abnormal). "
-                "Start with disk_overview and system_load, use all relevant tools, "
-                "then call submit_recommendations with findings from both areas."
-            ),
-        },
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": user_msg},
     ]
 
     for round_n in range(MAX_TOOL_ROUNDS):
         payload = {
             "messages":    messages,
-            "tools":       TOOL_DEFINITIONS,
+            "tools":       tool_defs,
             "tool_choice": "auto",
             "temperature": 0.1,
         }
@@ -726,7 +753,11 @@ def main():
         cmd_chat(args[1], args[2], args[3])
         return
 
-    # Default: run AI scan
+    # Default: run AI scan (mode from args or default to disk)
+    mode = "disk"
+    if args and args[0] == "--health-scan":
+        mode = "health"
+
     conf_path = os.environ.get("CLEANUX_CONF", DEFAULT_CONF)
     config    = load_config(conf_path)
 
@@ -738,7 +769,7 @@ def main():
         print(json.dumps({"status": "error", "message": "AI_ENDPOINT not configured — set it in " + conf_path}))
         sys.exit(1)
 
-    result = run_scan(endpoint, api_key, model)
+    result = run_scan(endpoint, api_key, model, mode=mode)
     print(json.dumps(result, ensure_ascii=False))
 
 if __name__ == "__main__":

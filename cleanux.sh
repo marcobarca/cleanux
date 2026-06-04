@@ -837,7 +837,8 @@ tui_main() {
   local -a items=(
     "Run cleanup now"
     "Scan filesystem"
-    "AI scan"
+    "AI disk scan"
+    "AI health scan"
     "Configure"
     "View log"
     "Update cleanux"
@@ -867,17 +868,18 @@ tui_main() {
         case $idx in
           0) tui_run ;;
           1) tui_scan ;;
-          2) tui_ai_scan ;;
-          3) tui_configure ;;
-          4) tui_log ;;
-          5)
+          2) tui_ai_scan "disk" ;;
+          3) tui_ai_scan "health" ;;
+          4) tui_configure ;;
+          5) tui_log ;;
+          6)
             tput cnorm
             cmd_update || true
             echo -e "\n  ${DIM}Press any key to go back${NC}"
             read -r -s -n1
             tput civis
             ;;
-          6) tput cnorm; tput clear; exit 0 ;;
+          7) tput cnorm; tput clear; exit 0 ;;
         esac
         ;;
       q|Q) tput cnorm; tput clear; exit 0 ;;
@@ -900,12 +902,15 @@ _ai_module() {
 }
 
 _ai_run() {
+  local mode="${1:-disk}"
   local mod; mod=$(_ai_module)
   if [[ -z "$mod" ]]; then
     echo '{"status":"error","message":"cleanux AI module not found — reinstall or run sudo cleanux --update"}'
     return 0
   fi
-  CLEANUX_CONF="$CONF_FILE" python3 "$mod" 2>/dev/null || \
+  local flag=""
+  [[ "$mode" == "health" ]] && flag="--health-scan"
+  CLEANUX_CONF="$CONF_FILE" python3 "$mod" $flag 2>/dev/null || \
     echo '{"status":"error","message":"cleanux-ai exited with an error — check python3 is available"}'
 }
 
@@ -1186,9 +1191,12 @@ tui_ai_config() {
 }
 
 tui_ai_scan() {
+  local mode="${1:-disk}"
+  local title; [[ "$mode" == "health" ]] && title="AI health scan" || title="AI disk scan"
+
   tui_clear
   tui_header
-  echo -e "  ${BOLD}AI scan${NC}\n"
+  echo -e "  ${BOLD}${title}${NC}\n"
 
   if [[ -z "$AI_ENDPOINT" ]]; then
     echo -e "  ${YELLOW}⚠${NC}  No AI endpoint configured."
@@ -1198,11 +1206,15 @@ tui_ai_scan() {
     return
   fi
 
-  echo -e "  ${DIM}AI is analyzing your system — this may take 20-60 seconds...${NC}"
+  if [[ "$mode" == "health" ]]; then
+    echo -e "  ${DIM}Analysing system load, processes, and services...${NC}"
+  else
+    echo -e "  ${DIM}Analysing disk usage and caches...${NC}"
+  fi
   echo -e "  ${DIM}Model: ${AI_MODEL:-gpt-4o-mini} · ${AI_ENDPOINT}${NC}\n"
 
   local raw
-  raw=$(_ai_run) || true
+  raw=$(_ai_run "$mode") || true
 
   local status; status=$(_ai_field "$raw" "status")
 
@@ -1250,7 +1262,7 @@ tui_ai_scan() {
   while true; do
     tui_clear
     tui_header
-    echo -e "  ${BOLD}AI scan${NC}   ${DIM}${AI_MODEL:-model}${NC}\n"
+    echo -e "  ${BOLD}${title}${NC}   ${DIM}${AI_MODEL:-model}${NC}\n"
     echo -e "  ${DIM}${summary}${NC}\n"
 
     for (( i=0; i<rec_count; i++ )); do
@@ -1858,18 +1870,24 @@ parse_args() {
       --enable-thumbnails)     THUMBNAIL_CACHE=true ;;
       --html-report)           HTML_REPORT=true ;;
       --update)                cmd_update; exit 0 ;;
-      --ai-scan)
+      --ai-scan|--ai-health-scan)
         # shellcheck source=/dev/null
         [[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
         if [[ -z "$AI_ENDPOINT" ]]; then
           warn "AI_ENDPOINT not set. Configure it in ${CONF_FILE} or via the TUI."
           exit 1
         fi
-        echo -e "\n${BOLD}AI scan${NC}\n"
-        echo -e "${DIM}Collecting system info...${NC}"
-        local ctx; ctx=$(ai_collect_context 2>/dev/null)
-        echo -e "${DIM}Querying ${AI_MODEL:-model}...${NC}\n"
-        ai_query "$ctx"
+        local _ai_mode="disk"
+        [[ "$1" == "--ai-health-scan" ]] && _ai_mode="health"
+        local _ai_mod; _ai_mod=$(_ai_module)
+        if [[ -z "$_ai_mod" ]]; then
+          warn "AI module not found — reinstall or run sudo cleanux --update"
+          exit 1
+        fi
+        local _ai_flag=""
+        [[ "$_ai_mode" == "health" ]] && _ai_flag="--health-scan"
+        echo -e "\n${BOLD}AI ${_ai_mode} scan${NC}\n"
+        CLEANUX_CONF="$CONF_FILE" python3 "$_ai_mod" $_ai_flag
         echo ""
         exit 0 ;;
       --scan)
