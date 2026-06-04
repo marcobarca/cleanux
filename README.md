@@ -4,7 +4,7 @@
 ![Version](https://img.shields.io/badge/version-2.1.18-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Interactive cleanup tool for Linux servers and dev machines. Removes Docker build cache, journal logs, package manager caches, dev tool caches, snap old revisions, core dumps, and stale temp files. Includes an AI scan that connects to any OpenAI-compatible endpoint, analyzes your system, and tells you exactly what's worth cleaning up.
+AI-driven Linux server monitor and cleanup tool. Connect it to any OpenAI-compatible model and get a full picture of what's eating your disk, what's hammering your CPU, which processes are misbehaving, and what's worth cleaning — all explained in plain language, with a chat interface to go deeper on each finding.
 
 ## Install
 
@@ -14,7 +14,41 @@ curl -fsSL https://raw.githubusercontent.com/marcobarca/cleanux/main/install.sh 
 
 Run `cleanux` to open the interactive menu.
 
-## What it cleans
+## AI scan
+
+cleanux connects to any OpenAI-compatible endpoint, runs a live analysis of your system, and returns a ranked list of recommendations — each with a detailed explanation of what it found and why it matters.
+
+Two scan modes:
+
+- **AI disk scan** — analyzes storage: large files, Docker build cache, journal logs, package caches, dev tool caches (npm, pip, Cargo…), snap revisions, temp files
+- **AI health scan** — analyzes runtime: CPU/memory load, heavy processes, zombie processes, systemd service anomalies, open file descriptors
+
+Each recommendation shows a severity badge, a summary, and a full explanation. Press `c` on any item to open a chat and ask follow-up questions — the AI has full context of what it found on your machine.
+
+### Setup
+
+Configure from the TUI → **Configure → AI**, or edit `/etc/cleanux.conf`:
+
+```bash
+AI_ENDPOINT="https://api.openai.com/v1"   # or http://localhost:11434/v1 for Ollama
+AI_API_KEY="sk-..."                        # leave empty for local models
+AI_MODEL="gpt-4o-mini"
+```
+
+Azure OpenAI is supported — set the endpoint to your Azure resource URL and the model to your deployment name.
+
+Multiple endpoints can be saved as named profiles and switched from the TUI.
+
+Requires `python3`.
+
+```bash
+cleanux --ai-scan          # disk analysis
+cleanux --ai-health-scan   # health analysis
+```
+
+## Manual cleanup
+
+For when you want to run a targeted cleanup without the AI:
 
 - **Docker** — build cache, stopped containers, dangling images, unused volumes *(opt-in)*
 - **Journal logs** — entries older than 14 days
@@ -27,27 +61,7 @@ Run `cleanux` to open the interactive menu.
 
 ## Filesystem scan
 
-The **Scan filesystem** option in the TUI performs an exploratory scan and groups findings into categories (large files, old logs, orphaned caches, etc.). Each category shows a file list with details before asking for confirmation — nothing is deleted without explicit approval.
-
-## AI scan
-
-cleanux can connect to any OpenAI-compatible endpoint and suggest what to clean up based on live system data.
-
-Configure from the TUI → **Configure → AI**, or edit `/etc/cleanux.conf`:
-
-```bash
-AI_ENDPOINT="https://api.openai.com/v1"   # or http://localhost:11434/v1 for Ollama
-AI_API_KEY="sk-..."                        # leave empty for local models
-AI_MODEL="gpt-4o-mini"
-```
-
-Multiple endpoints can be saved as named profiles and switched from the TUI. The AI receives disk usage, large files, Docker stats, log sizes, and dev cache info — it only produces recommendations, nothing is deleted automatically.
-
-Requires `python3`.
-
-```bash
-cleanux --ai-scan
-```
+The **Scan filesystem** option performs an exploratory scan and groups findings into categories (large files, old logs, orphaned caches, etc.). Each category shows a file list with details before asking for confirmation — nothing is deleted without explicit approval.
 
 ## Non-interactive use
 

@@ -794,14 +794,14 @@ tui_scan() {
 }
 
 tui_configure() {
-  local -a items=("Modules" "Schedule" "Notifications" "AI" "Back")
+  local -a items=("Modules" "Schedule" "Notifications" "AI" "View log" "Update cleanux" "Back")
   local cursor=0
   local n=${#items[@]}
 
   while true; do
     tui_clear
     tui_header
-    echo -e "  ${BOLD}Configure${NC}\n"
+    echo -e "  ${BOLD}Settings & Tools${NC}\n"
     for (( i=0; i<n; i++ )); do
       if (( i == cursor )); then
         echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
@@ -821,7 +821,15 @@ tui_configure() {
           1) tui_schedule ;;
           2) tui_notifications ;;
           3) tui_ai_config ;;
-          4) return ;;
+          4) tui_log ;;
+          5)
+            tput cnorm
+            cmd_update || true
+            echo -e "\n  ${DIM}Press any key to go back${NC}"
+            read -r -s -n1
+            tput civis
+            ;;
+          6) return ;;
         esac
         ;;
       q|Q|$'\x1b') return ;;
@@ -835,13 +843,11 @@ tui_main() {
   tui_splash
 
   local -a items=(
-    "Run cleanup now"
-    "Scan filesystem"
     "AI disk scan"
     "AI health scan"
-    "Configure"
-    "View log"
-    "Update cleanux"
+    "Manual cleanup"
+    "Scan filesystem"
+    "Settings & Tools"
     "Exit"
   )
   local idx=0
@@ -866,20 +872,12 @@ tui_main() {
       $'\x1b[B'|j) (( idx < n-1 )) && (( idx++ )) || true ;;
       ''|$'\n'|$'\r')
         case $idx in
-          0) tui_run ;;
-          1) tui_scan ;;
-          2) tui_ai_scan "disk" ;;
-          3) tui_ai_scan "health" ;;
+          0) tui_ai_scan "disk" ;;
+          1) tui_ai_scan "health" ;;
+          2) tui_run ;;
+          3) tui_scan ;;
           4) tui_configure ;;
-          5) tui_log ;;
-          6)
-            tput cnorm
-            cmd_update || true
-            echo -e "\n  ${DIM}Press any key to go back${NC}"
-            read -r -s -n1
-            tput civis
-            ;;
-          7) tput cnorm; tput clear; exit 0 ;;
+          5) tput cnorm; tput clear; exit 0 ;;
         esac
         ;;
       q|Q) tput cnorm; tput clear; exit 0 ;;
