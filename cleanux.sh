@@ -1042,6 +1042,73 @@ _ai_profile_add() {
   tput civis
 }
 
+tui_ai_chat() {
+  local rec_json="$1" title="$2"
+  local history_json="[]"
+  local -a chat_lines=()
+  local mod; mod=$(_ai_module)
+
+  while true; do
+    tui_clear; tui_header
+    echo -e "  ${BOLD}${title}${NC}  ${DIM}→ chat${NC}\n"
+
+    for line in "${chat_lines[@]}"; do
+      echo -e "$line"
+    done
+
+    echo -e "  ${DIM}──────────────────────────────────────────────────────${NC}"
+    tput cnorm
+    printf "  ${GREEN}❯${NC} "
+    local question
+    IFS= read -r question
+    tput civis
+
+    [[ -z "$question" ]] && continue
+    [[ "$question" == "q" || "$question" == "Q" ]] && return
+
+    chat_lines+=("  ${BOLD}You${NC}  ${question}" "")
+
+    # Show "thinking" while waiting
+    tui_clear; tui_header
+    echo -e "  ${BOLD}${title}${NC}  ${DIM}→ chat${NC}\n"
+    for line in "${chat_lines[@]}"; do echo -e "$line"; done
+    echo -e "  ${DIM}Thinking...${NC}"
+
+    if [[ -z "$mod" ]]; then
+      chat_lines+=("  ${RED}✖${NC}  AI module not found" "")
+      continue
+    fi
+
+    local result
+    result=$(CLEANUX_CONF="$CONF_FILE" python3 "$mod" --chat \
+      "$rec_json" "$history_json" "$question" 2>/dev/null) || true
+
+    local status; status=$(_ai_field "$result" "status")
+
+    if [[ "$status" != "ok" ]]; then
+      local errmsg; errmsg=$(_ai_field "$result" "message")
+      chat_lines+=("  ${RED}✖${NC}  ${errmsg:-Unknown error}" "")
+      continue
+    fi
+
+    local reply; reply=$(_ai_field "$result" "reply")
+
+    history_json=$(python3 -c "
+import json, sys
+h = json.loads(sys.argv[1])
+h.append({'role':'user',      'content':sys.argv[2]})
+h.append({'role':'assistant', 'content':sys.argv[3]})
+print(json.dumps(h))
+" "$history_json" "$question" "$reply" 2>/dev/null) || true
+
+    chat_lines+=("  ${DIM}AI${NC}")
+    while IFS= read -r rline; do
+      chat_lines+=("    ${rline}")
+    done < <(echo "$reply" | fold -s -w 66)
+    chat_lines+=("")
+  done
+}
+
 tui_ai_config() {
   local cursor=0
 
@@ -1206,40 +1273,69 @@ tui_ai_scan() {
       $'\x1b[B'|j) (( cursor < rec_count-1 )) && (( cursor++ )) || true ;;
       ' ') [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true ;;
       ''|$'\n'|$'\r')
-        # Detail view
-        tui_clear; tui_header
-        local rc; rc=$(_risk_color "${risks[$cursor]}")
-        echo -e "  ${BOLD}${titles[$cursor]}${NC}\n"
-        echo -e "  ${DIM}Risk${NC}       ${rc}● ${risks[$cursor]}${NC}     ${DIM}Est. freed${NC}  ${sizes[$cursor]}"
-        echo -e "  ${DIM}──────────────────────────────────────────────────────${NC}\n"
-        echo -e "  ${DIM}What & why${NC}"
-        echo "${explanations[$cursor]}" | fold -s -w 68 | sed 's/^/    /'
-        echo ""
-        if [[ -n "${commands[$cursor]}" ]]; then
-          echo -e "  ${DIM}Command${NC}"
-          echo -e "  ${BOLD}  ${commands[$cursor]}${NC}\n"
-        fi
-        local det_paths
-        det_paths=$(python3 -c "
+        # Detail view loop
+        local _det_loop=true
+        while $_det_loop; do
+          tui_clear; tui_header
+          local rc; rc=$(_risk_color "${risks[$cursor]}")
+          echo -e "  ${BOLD}${titles[$cursor]}${NC}\n"
+          echo -e "  ${DIM}Risk${NC}       ${rc}● ${risks[$cursor]}${NC}     ${DIM}Est. freed${NC}  ${sizes[$cursor]}"
+          echo -e "  ${DIM}──────────────────────────────────────────────────────${NC}\n"
+          echo -e "  ${DIM}What & why${NC}"
+          echo "${explanations[$cursor]}" | fold -s -w 68 | sed 's/^/    /'
+          echo ""
+          if [[ -n "${commands[$cursor]}" ]]; then
+            echo -e "  ${DIM}Command${NC}"
+            echo -e "  ${BOLD}  ${commands[$cursor]}${NC}\n"
+          fi
+          local det_paths
+          det_paths=$(python3 -c "
 import json, sys
 d = json.loads(sys.argv[1])
 paths = d.get('recommendations', [])[${cursor}].get('paths', [])
 print('\n'.join(paths[:10]))
 " "$raw" 2>/dev/null) || true
-        if [[ -n "$det_paths" ]]; then
-          echo -e "  ${DIM}Paths${NC}"
-          while IFS= read -r p; do
-            [[ -n "$p" ]] && echo -e "    ${DIM}$p${NC}"
-          done <<< "$det_paths"
-          echo ""
-        fi
-        echo -e "  ${DIM}──────────────────────────────────────────────────────${NC}"
-        [[ "${selected[$cursor]}" == true ]] \
-          && echo -e "  ${GREEN}✓ Selected for execution${NC}\n" \
-          || echo -e "  ${DIM}Not selected${NC}\n"
-        echo -e "  ${DIM}Space to toggle   q back${NC}"
-        local dk; dk=$(tui_read_key)
-        [[ "$dk" == ' ' ]] && { [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true; }
+          if [[ -n "$det_paths" ]]; then
+            echo -e "  ${DIM}Paths${NC}"
+            while IFS= read -r p; do
+              [[ -n "$p" ]] && echo -e "    ${DIM}$p${NC}"
+            done <<< "$det_paths"
+            echo ""
+          fi
+          echo -e "  ${DIM}──────────────────────────────────────────────────────${NC}"
+          [[ "${selected[$cursor]}" == true ]] \
+            && echo -e "  ${GREEN}✓ Selected for execution${NC}\n" \
+            || echo -e "  ${DIM}Not selected${NC}\n"
+          echo -e "  ${DIM}Space toggle   c chat   q back${NC}"
+
+          local dk; dk=$(tui_read_key)
+          case "$dk" in
+            ' ')
+              [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true
+              ;;
+            c|C)
+              local _cpaths _crj
+              _cpaths=$(python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+print(json.dumps(d.get('recommendations', [])[${cursor}].get('paths', [])))
+" "$raw" 2>/dev/null) || _cpaths="[]"
+              _crj=$(python3 -c "
+import json, sys
+print(json.dumps({
+  'title':       sys.argv[1],
+  'explanation': sys.argv[2],
+  'command':     sys.argv[3],
+  'risk':        sys.argv[4],
+  'paths':       json.loads(sys.argv[5]),
+}))
+" "${titles[$cursor]}" "${explanations[$cursor]}" "${commands[$cursor]}" \
+  "${risks[$cursor]}" "$_cpaths" 2>/dev/null) || _crj="{}"
+              tui_ai_chat "$_crj" "${titles[$cursor]}"
+              ;;
+            q|Q|$'\x1b') _det_loop=false ;;
+          esac
+        done
         ;;
       x|X)
         (( sel_count == 0 )) && continue

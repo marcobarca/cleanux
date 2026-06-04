@@ -484,6 +484,75 @@ def cmd_delete_profile(name):
     except FileNotFoundError:
         print(json.dumps({"status": "error", "message": f"Profile not found: {name}"}))
 
+# ── Chat about a recommendation ───────────────────────────────────────────────
+
+def cmd_chat(rec_json_str, history_json_str, question):
+    conf_path = os.environ.get("CLEANUX_CONF", DEFAULT_CONF)
+    config    = load_config(conf_path)
+    endpoint  = config.get("AI_ENDPOINT", "").strip()
+    api_key   = config.get("AI_API_KEY",  "").strip()
+    model     = config.get("AI_MODEL",    "gpt-4o-mini").strip()
+
+    if not endpoint:
+        print(json.dumps({"status": "error", "message": "AI_ENDPOINT not configured"}))
+        return
+
+    try:
+        rec = json.loads(rec_json_str)
+    except json.JSONDecodeError:
+        rec = {}
+    try:
+        history = json.loads(history_json_str)
+    except json.JSONDecodeError:
+        history = []
+
+    paths_str = ", ".join(rec.get("paths", [])) or "none listed"
+    system = (
+        "You are a Linux system administrator assistant. "
+        "The user is reviewing a specific disk cleanup recommendation and has questions about it. "
+        "Give clear, precise answers. When relevant, mention Linux internals, typical file paths, "
+        "or how to verify things manually. Be concise — 2-4 sentences unless more depth is needed.\n\n"
+        "Recommendation context:\n"
+        f"  Title:    {rec.get('title', 'N/A')}\n"
+        f"  Risk:     {rec.get('risk', 'N/A')}\n"
+        f"  Command:  {rec.get('command', 'N/A')}\n"
+        f"  Paths:    {paths_str}\n"
+        f"  Details:  {rec.get('explanation', 'N/A')}\n"
+    )
+
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": question})
+
+    ep = endpoint.rstrip("/")
+    if ep.endswith("/chat/completions"):
+        ep = ep[:-len("/chat/completions")]
+    azure = ".openai.azure.com" in ep
+    if azure:
+        url = f"{ep}/openai/deployments/{model}/chat/completions?api-version=2024-10-21"
+    else:
+        url = f"{ep}/chat/completions"
+
+    payload = {"messages": messages, "temperature": 0.3}
+    if not azure:
+        payload["model"] = model
+
+    response = _http_post(url, api_key, payload, azure=azure)
+
+    if "error" in response:
+        err = response["error"]
+        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        print(json.dumps({"status": "error", "message": msg}))
+        return
+
+    choices = response.get("choices") or []
+    if not choices:
+        print(json.dumps({"status": "error", "message": "Empty response from AI"}))
+        return
+
+    reply = choices[0].get("message", {}).get("content", "")
+    print(json.dumps({"status": "ok", "reply": reply}, ensure_ascii=False))
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
@@ -513,6 +582,14 @@ def main():
             print(json.dumps({"status": "error", "message": "Usage: --delete-profile NAME"}))
             sys.exit(1)
         cmd_delete_profile(args[1])
+        return
+
+    if args and args[0] == "--chat":
+        # args: --chat REC_JSON HISTORY_JSON QUESTION
+        if len(args) < 4:
+            print(json.dumps({"status": "error", "message": "Usage: --chat REC_JSON HISTORY_JSON QUESTION"}))
+            sys.exit(1)
+        cmd_chat(args[1], args[2], args[3])
         return
 
     # Default: run AI scan
