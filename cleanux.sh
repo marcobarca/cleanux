@@ -217,15 +217,20 @@ HTML
 # ── Config writer ─────────────────────────────────────────────────────────────
 conf_set() {
   local key="$1" val="$2"
+  # Always update the in-memory value so the current session sees it
+  eval "${key}=${val}" 2>/dev/null || true
   if [[ ! -f "$CONF_FILE" ]]; then
-    touch "$CONF_FILE" 2>/dev/null || { warn "Cannot write to ${CONF_FILE}"; return 1; }
+    touch "$CONF_FILE" 2>/dev/null || { warn "Cannot write to ${CONF_FILE} — changes will not persist"; return 0; }
+  fi
+  if [[ ! -w "$CONF_FILE" ]]; then
+    warn "Cannot write to ${CONF_FILE} — run as root to persist settings"
+    return 0
   fi
   if grep -q "^${key}=" "$CONF_FILE" 2>/dev/null; then
-    sed -i "s|^${key}=.*|${key}=${val}|" "$CONF_FILE"
+    sed -i "s|^${key}=.*|${key}=${val}|" "$CONF_FILE" || true
   else
-    echo "${key}=${val}" >> "$CONF_FILE"
+    echo "${key}=${val}" >> "$CONF_FILE" || true
   fi
-  eval "${key}=${val}" 2>/dev/null || true
 }
 
 # ── TUI ───────────────────────────────────────────────────────────────────────
@@ -649,7 +654,6 @@ tui_scan_detail() {
 # Delete all paths in a scan category's tmp file
 scan_delete_category() {
   local label="$1"
-  local slug; slug=$(echo "$label" | tr ' /' '__' | tr -dc '[:alnum:]_' | cut -c1-30)
 
   # Find the matching tmp file by searching all files
   local f
@@ -826,7 +830,7 @@ tui_main() {
     "Update cleanux"
     "Exit"
   )
-  local selected=0
+  local idx=0
   local n=${#items[@]}
 
   while true; do
@@ -834,7 +838,7 @@ tui_main() {
     tui_header
     echo -e "  ${BOLD}Main menu${NC}\n"
     for (( i=0; i<n; i++ )); do
-      if (( i == selected )); then
+      if (( i == idx )); then
         echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
       else
         echo -e "    ${items[$i]}"
@@ -844,10 +848,10 @@ tui_main() {
 
     local key; key=$(tui_read_key)
     case "$key" in
-      $'\x1b[A'|k) (( selected > 0 ))   && (( selected-- )) || true ;;
-      $'\x1b[B'|j) (( selected < n-1 )) && (( selected++ )) || true ;;
+      $'\x1b[A'|k) (( idx > 0 ))   && (( idx-- )) || true ;;
+      $'\x1b[B'|j) (( idx < n-1 )) && (( idx++ )) || true ;;
       ''|$'\n'|$'\r')
-        case $selected in
+        case $idx in
           0) tui_run ;;
           1) tui_scan ;;
           2) tui_ai_scan ;;
@@ -881,8 +885,8 @@ ai_collect_context() {
 
   echo "=== LARGEST FILES (>50MB, not accessed in 7d) ==="
   find /home /opt /var /tmp -maxdepth 6 -type f -size +50M -atime +7 \
-    ! -path "*/proc/*" ! -path "*/sys/*" 2>/dev/null \
-    -exec du -sh {} \; 2>/dev/null | sort -rh | head -20
+    ! -path "*/proc/*" ! -path "*/sys/*" \
+    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -20
   echo ""
 
   echo "=== DOCKER ==="
@@ -910,21 +914,23 @@ ai_collect_context() {
   echo ""
 
   echo "=== LARGE LOG FILES ==="
-  find /var/log -type f -size +10M 2>/dev/null -exec du -sh {} \; | sort -rh | head -10
+  find /var/log -type f -size +10M \
+    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
   echo ""
 
   echo "=== OLD TMP FILES ==="
-  find /tmp -maxdepth 2 -atime +7 2>/dev/null -exec du -sh {} \; 2>/dev/null | sort -rh | head -10
+  find /tmp -maxdepth 2 -atime +7 \
+    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
   echo ""
 
   echo "=== NODE_MODULES ==="
-  find /home /opt -name node_modules -type d -prune 2>/dev/null \
-    -exec du -sh {} \; | sort -rh | head -10
+  find /home /opt -name node_modules -type d -prune \
+    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
   echo ""
 
   echo "=== PYTHON CACHE ==="
-  find /home -name "__pycache__" -type d -prune 2>/dev/null \
-    -exec du -sh {} \; 2>/dev/null | sort -rh | head -10
+  find /home -name "__pycache__" -type d -prune \
+    -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10
   echo ""
 }
 
@@ -968,9 +974,6 @@ print(json.dumps({
     return 1
   fi
 
-  local auth_header=""
-  [[ -n "$AI_API_KEY" ]] && auth_header="-H \"Authorization: Bearer ${AI_API_KEY}\""
-
   local response
   response=$(curl -s -f \
     -H "Content-Type: application/json" \
@@ -1006,6 +1009,10 @@ except Exception as e:
 }
 
 tui_ai_config() {
+  local -a items=("Set endpoint" "Set API key" "Set model" "Clear all" "Back")
+  local cursor=0
+  local n=${#items[@]}
+
   while true; do
     tui_clear
     tui_header
@@ -1013,64 +1020,44 @@ tui_ai_config() {
     echo -e "  Endpoint : ${DIM}${AI_ENDPOINT:-not set}${NC}"
     echo -e "  API key  : ${DIM}${AI_API_KEY:+(set)}${AI_API_KEY:-not set}${NC}"
     echo -e "  Model    : ${DIM}${AI_MODEL:-not set}${NC}\n"
-    echo -e "  ${DIM}Examples:${NC}"
-    echo -e "  ${DIM}  OpenAI  → https://api.openai.com/v1  /  gpt-4o-mini${NC}"
-    echo -e "  ${DIM}  Ollama  → http://localhost:11434/v1  /  llama3  (no key)${NC}\n"
+    echo -e "  ${DIM}OpenAI  → https://api.openai.com/v1 · gpt-4o-mini${NC}"
+    echo -e "  ${DIM}Ollama  → http://localhost:11434/v1  · llama3 (no key needed)${NC}\n"
+    [[ $EUID -ne 0 ]] && echo -e "  ${YELLOW}⚠${NC}  ${DIM}Not root — settings apply to this session only${NC}\n"
 
-    local -a items=("Set endpoint" "Set API key" "Set model" "Clear all" "Back")
-    local sel=0
-    local nf=${#items[@]}
-
-    # Draw menu inline (no nested loop — just redraw on key)
-    local key; key=$(tui_read_key)
-
-    # Simple: show options with numbers, pick by arrow + enter via sub-loop
-    local cursor=0
-    while true; do
-      tui_clear
-      tui_header
-      echo -e "  ${BOLD}Configure AI scan${NC}\n"
-      echo -e "  Endpoint : ${DIM}${AI_ENDPOINT:-not set}${NC}"
-      echo -e "  API key  : ${DIM}${AI_API_KEY:+(set)}${AI_API_KEY:-not set}${NC}"
-      echo -e "  Model    : ${DIM}${AI_MODEL:-not set}${NC}\n"
-      echo -e "  ${DIM}OpenAI  → https://api.openai.com/v1 · gpt-4o-mini${NC}"
-      echo -e "  ${DIM}Ollama  → http://localhost:11434/v1  · llama3 (no key needed)${NC}\n"
-
-      for (( i=0; i<nf; i++ )); do
-        if (( i == cursor )); then
-          echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
-        else
-          echo -e "    ${items[$i]}"
-        fi
-      done
-      echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
-
-      key=$(tui_read_key)
-      case "$key" in
-        $'\x1b[A'|k) (( cursor > 0 ))    && (( cursor-- )) || true ;;
-        $'\x1b[B'|j) (( cursor < nf-1 )) && (( cursor++ )) || true ;;
-        ''|$'\n'|$'\r')
-          tput cnorm
-          case $cursor in
-            0) echo -e "\n  ${BOLD}Endpoint${NC} (e.g. https://api.openai.com/v1):"
-               printf "  > "; read -r AI_ENDPOINT
-               conf_set AI_ENDPOINT "\"${AI_ENDPOINT}\"" ;;
-            1) echo -e "\n  ${BOLD}API key${NC} (leave empty for local models):"
-               printf "  > "; read -r -s AI_API_KEY; echo ""
-               conf_set AI_API_KEY "\"${AI_API_KEY}\"" ;;
-            2) echo -e "\n  ${BOLD}Model${NC} (e.g. gpt-4o-mini, llama3, mistral):"
-               printf "  > "; read -r AI_MODEL
-               conf_set AI_MODEL "\"${AI_MODEL}\"" ;;
-            3) AI_ENDPOINT=""; AI_API_KEY=""; AI_MODEL=""
-               conf_set AI_ENDPOINT '""'; conf_set AI_API_KEY '""'; conf_set AI_MODEL '""'
-               tui_flash "AI config cleared" ;;
-            4) tput civis; return ;;
-          esac
-          tput civis
-          ;;
-        q|Q|$'\x1b') return ;;
-      esac
+    for (( i=0; i<n; i++ )); do
+      if (( i == cursor )); then
+        echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+      else
+        echo -e "    ${items[$i]}"
+      fi
     done
+    echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( cursor > 0 ))   && (( cursor-- )) || true ;;
+      $'\x1b[B'|j) (( cursor < n-1 )) && (( cursor++ )) || true ;;
+      ''|$'\n'|$'\r')
+        tput cnorm
+        case $cursor in
+          0) echo -e "\n  ${BOLD}Endpoint${NC} (e.g. https://api.openai.com/v1):"
+             printf "  > "; read -r AI_ENDPOINT
+             conf_set AI_ENDPOINT "\"${AI_ENDPOINT}\"" ;;
+          1) echo -e "\n  ${BOLD}API key${NC} (leave empty for local models):"
+             printf "  > "; read -r -s AI_API_KEY; echo ""
+             conf_set AI_API_KEY "\"${AI_API_KEY}\"" ;;
+          2) echo -e "\n  ${BOLD}Model${NC} (e.g. gpt-4o-mini, llama3, mistral):"
+             printf "  > "; read -r AI_MODEL
+             conf_set AI_MODEL "\"${AI_MODEL}\"" ;;
+          3) AI_ENDPOINT=""; AI_API_KEY=""; AI_MODEL=""
+             conf_set AI_ENDPOINT '""'; conf_set AI_API_KEY '""'; conf_set AI_MODEL '""'
+             tui_flash "AI config cleared" ;;
+          4) tput civis; return ;;
+        esac
+        tput civis
+        ;;
+      q|Q|$'\x1b') return ;;
+    esac
   done
 }
 
