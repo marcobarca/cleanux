@@ -27,6 +27,14 @@ SYSTEM_PROMPT = (
     "a picture of overall usage, then drill into specific areas.\n\n"
     "When you have gathered enough information, call submit_recommendations with a "
     "prioritised list of specific, actionable cleanup tasks (largest impact first).\n\n"
+    "For each recommendation, write a thorough explanation that covers:\n"
+    "  1. What the service or component is and what it does on a Linux system\n"
+    "  2. What these files/caches are and why they accumulate over time\n"
+    "  3. Who or what creates and uses them (system daemons, dev tools, package managers, etc.)\n"
+    "  4. What the concrete impact of removing them will be (what is lost, what regenerates automatically)\n"
+    "  5. Any caveats or situations where removing them could be problematic\n\n"
+    "Write the explanation as flowing prose (2-5 sentences), not bullet points. "
+    "Assume the reader is a developer who knows Linux basics but may not know every subsystem in depth.\n\n"
     "Risk levels:\n"
     "  safe   — always fine to remove (caches, build artefacts)\n"
     "  low    — very likely fine, minimal chance of side effects\n"
@@ -261,7 +269,7 @@ TOOL_DEFINITIONS = [
                             "type": "object",
                             "properties": {
                                 "title":           {"type": "string", "description": "Short action title"},
-                                "explanation":     {"type": "string", "description": "Why this is safe (or risky) to remove"},
+                                "explanation":     {"type": "string", "description": "Full explanation: what the service/component is, what these files are and why they accumulate, who creates and uses them, what happens after removal (what is lost vs what regenerates), and any caveats. 2-5 sentences of prose."},
                                 "command":         {"type": "string", "description": "Shell command to execute (omit if paths-only)"},
                                 "paths":           {"type": "array", "items": {"type": "string"}, "description": "Specific paths to delete (max 20)"},
                                 "estimated_bytes": {"type": "integer", "description": "Estimated bytes freed (0 if unknown)"},
