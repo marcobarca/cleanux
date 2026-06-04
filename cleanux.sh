@@ -737,6 +737,7 @@ tui_main() {
     "Configure schedule"
     "Configure notifications"
     "View log"
+    "Update cleanux"
     "Exit"
   )
   local selected=0
@@ -767,12 +768,66 @@ tui_main() {
           3) tui_schedule ;;
           4) tui_notifications ;;
           5) tui_log ;;
-          6) tput cnorm; tput clear; exit 0 ;;
+          6)
+            tput cnorm
+            cmd_update
+            echo -e "\n  ${DIM}Press any key to go back${NC}"
+            read -r -s -n1
+            tput civis
+            ;;
+          7) tput cnorm; tput clear; exit 0 ;;
         esac
         ;;
       q|Q) tput cnorm; tput clear; exit 0 ;;
     esac
   done
+}
+
+# ── Update ────────────────────────────────────────────────────────────────────
+
+readonly REMOTE_URL="https://raw.githubusercontent.com/marcobarca/cleanux/main/cleanux.sh"
+
+cmd_update() {
+  local bin; bin=$(command -v cleanux 2>/dev/null || echo /usr/local/bin/cleanux)
+
+  if ! has_cmd curl; then
+    warn "curl is required for updates"
+    return 1
+  fi
+
+  echo -e "\n${BOLD}cleanux update${NC}\n"
+  info "Fetching latest version..."
+
+  local tmp; tmp=$(mktemp)
+  if ! curl -fsSL "$REMOTE_URL" -o "$tmp" 2>/dev/null; then
+    warn "Could not reach GitHub. Check your connection."
+    rm -f "$tmp"
+    return 1
+  fi
+
+  local remote_version
+  remote_version=$(grep '^readonly VERSION=' "$tmp" | cut -d'"' -f2)
+
+  if [[ -z "$remote_version" ]]; then
+    warn "Could not determine remote version."
+    rm -f "$tmp"
+    return 1
+  fi
+
+  if [[ "$remote_version" == "$VERSION" ]]; then
+    ok "Already up to date (v${VERSION})"
+    rm -f "$tmp"
+    return 0
+  fi
+
+  echo -e "  ${DIM}Current : v${VERSION}${NC}"
+  echo -e "  ${GREEN}Latest  : v${remote_version}${NC}\n"
+
+  cp "$tmp" "$bin"
+  chmod +x "$bin"
+  rm -f "$tmp"
+
+  ok "Updated to v${remote_version}"
 }
 
 # ── Setup helpers ─────────────────────────────────────────────────────────────
@@ -1167,6 +1222,7 @@ parse_args() {
       --enable-go)             GO_CACHE=true ;;
       --enable-thumbnails)     THUMBNAIL_CACHE=true ;;
       --html-report)           HTML_REPORT=true ;;
+      --update)                cmd_update; exit 0 ;;
       --scan)
         # shellcheck source=/dev/null
         [[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
