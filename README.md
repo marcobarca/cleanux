@@ -1,7 +1,7 @@
 # cleanux
 
 [![ShellCheck](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml)
-![Version](https://img.shields.io/badge/version-2.1.14-blue)
+![Version](https://img.shields.io/badge/version-2.1.15-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Interactive cleanup tool for Linux servers and dev machines. Removes Docker build cache, journal logs, package manager caches, dev tool caches, snap old revisions, core dumps, and stale temp files. Includes an AI scan that connects to any OpenAI-compatible endpoint, analyzes your system, and tells you exactly what's worth cleaning up.
