@@ -504,12 +504,235 @@ tui_run() {
   tput civis
 }
 
+# ── Scan ──────────────────────────────────────────────────────────────────────
+
+# Temp files used to store found paths per category
+_SCAN_TMPDIR=""
+
+scan_init() {
+  _SCAN_TMPDIR=$(mktemp -d /tmp/cleanux_scan.XXXXXX)
+}
+
+scan_cleanup_tmp() {
+  if [[ -n "$_SCAN_TMPDIR" && -d "$_SCAN_TMPDIR" ]]; then
+    rm -rf "$_SCAN_TMPDIR"
+  fi
+  _SCAN_TMPDIR=""
+}
+
+# Each scan_* writes paths to a file and echoes "label|count|size_human"
+_scan_size_of() {
+  du -shc --files0-from=<(tr '\n' '\0' < "$1") 2>/dev/null | tail -1 | cut -f1 || echo '?'
+}
+
+scan_broken_symlinks() {
+  local out="${_SCAN_TMPDIR}/broken_symlinks.txt"
+  find /home /opt /usr/local -maxdepth 8 -xtype l 2>/dev/null > "$out" || true
+  local count; count=$(wc -l < "$out")
+  if (( count > 0 )); then
+    echo "Broken symlinks|${count}|$(_scan_size_of "$out")"
+  fi
+}
+
+scan_backup_files() {
+  local out="${_SCAN_TMPDIR}/backup_files.txt"
+  find /home -maxdepth 8 \
+    \( -name "*.bak" -o -name "*.old" -o -name "*.orig" -o -name "*~" -o -name "*.swp" \) \
+    -type f 2>/dev/null > "$out" || true
+  local count; count=$(wc -l < "$out")
+  if (( count > 0 )); then
+    echo "Backup files (*.bak *.old *.orig *~ *.swp)|${count}|$(_scan_size_of "$out")"
+  fi
+}
+
+scan_node_modules() {
+  local out="${_SCAN_TMPDIR}/node_modules.txt"
+  find /home /opt -name node_modules -type d -prune -atime +60 2>/dev/null > "$out" || true
+  local count; count=$(wc -l < "$out")
+  if (( count > 0 )); then
+    local size; size=$(du -shc --files0-from=<(tr '\n' '\0' < "$out") 2>/dev/null | tail -1 | cut -f1 || echo '?')
+    echo "node_modules not accessed in 60+ days|${count}|${size}"
+  fi
+}
+
+scan_pycache() {
+  local out="${_SCAN_TMPDIR}/pycache.txt"
+  find /home -maxdepth 10 \
+    \( -name "__pycache__" -type d -prune -o -name "*.pyc" -type f \) \
+    2>/dev/null > "$out" || true
+  local count; count=$(wc -l < "$out")
+  if (( count > 0 )); then
+    local size; size=$(du -shc --files0-from=<(tr '\n' '\0' < "$out") 2>/dev/null | tail -1 | cut -f1 || echo '?')
+    echo "Python cache (__pycache__ and *.pyc)|${count}|${size}"
+  fi
+}
+
+scan_large_old_files() {
+  local out="${_SCAN_TMPDIR}/large_old.txt"
+  find /home /opt /var/log -maxdepth 6 \
+    -type f -size +100M -atime +30 \
+    ! -path "*/proc/*" ! -path "*/sys/*" \
+    2>/dev/null > "$out" || true
+  local count; count=$(wc -l < "$out")
+  if (( count > 0 )); then
+    local size; size=$(du -shc --files0-from=<(tr '\n' '\0' < "$out") 2>/dev/null | tail -1 | cut -f1 || echo '?')
+    echo "Files >100 MB not accessed in 30+ days|${count}|${size}"
+  fi
+}
+
+scan_empty_dirs() {
+  local out="${_SCAN_TMPDIR}/empty_dirs.txt"
+  find /home -mindepth 1 -maxdepth 6 -type d -empty 2>/dev/null > "$out" || true
+  local count; count=$(wc -l < "$out")
+  if (( count > 0 )); then
+    echo "Empty directories in /home|${count}|0B"
+  fi
+}
+
+run_scan() {
+  scan_init
+  local line
+  line=$(scan_broken_symlinks) || true; [[ -n "$line" ]] && echo "$line" || true
+  line=$(scan_backup_files)    || true; [[ -n "$line" ]] && echo "$line" || true
+  line=$(scan_node_modules)    || true; [[ -n "$line" ]] && echo "$line" || true
+  line=$(scan_pycache)         || true; [[ -n "$line" ]] && echo "$line" || true
+  line=$(scan_large_old_files) || true; [[ -n "$line" ]] && echo "$line" || true
+  line=$(scan_empty_dirs)      || true; [[ -n "$line" ]] && echo "$line" || true
+}
+
+# Delete all paths in a scan category's tmp file
+scan_delete_category() {
+  local label="$1"
+  local slug; slug=$(echo "$label" | tr ' /' '__' | tr -dc '[:alnum:]_' | cut -c1-30)
+
+  # Find the matching tmp file by searching all files
+  local f
+  for f in "${_SCAN_TMPDIR}"/*.txt; do
+    [[ -f "$f" ]] || continue
+    # Map label to filename heuristically
+    local base; base=$(basename "$f" .txt)
+    case "$label" in
+      *symlink*)       [[ "$base" == "broken_symlinks" ]] || continue ;;
+      *ackup*)         [[ "$base" == "backup_files" ]]    || continue ;;
+      *node_modules*)  [[ "$base" == "node_modules" ]]    || continue ;;
+      *ython*)         [[ "$base" == "pycache" ]]         || continue ;;
+      *100*)           [[ "$base" == "large_old" ]]       || continue ;;
+      *mpty*)          [[ "$base" == "empty_dirs" ]]      || continue ;;
+      *) continue ;;
+    esac
+    while IFS= read -r path; do
+      [[ -z "$path" ]] && continue
+      if [[ -d "$path" ]]; then
+        rm -rf "$path" 2>/dev/null && log "scan: removed dir $path" || warn "Failed to remove $path"
+      else
+        rm -f "$path" 2>/dev/null && log "scan: removed file $path" || warn "Failed to remove $path"
+      fi
+    done < "$f"
+    return
+  done
+}
+
+tui_scan() {
+  tui_clear
+  tui_header
+  echo -e "  ${BOLD}Filesystem scan${NC}\n"
+  echo -e "  ${DIM}Scanning — this may take a moment...${NC}"
+
+  # Run scan and collect results
+  local -a labels=()
+  local -a counts=()
+  local -a sizes=()
+  local -a selected=()
+
+  while IFS='|' read -r label count size; do
+    labels+=("$label")
+    counts+=("$count")
+    sizes+=("$size")
+    selected+=(false)
+  done < <(run_scan)
+
+  local n=${#labels[@]}
+
+  if (( n == 0 )); then
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Filesystem scan${NC}\n"
+    echo -e "  ${GREEN}✔${NC}  Nothing suspicious found.\n"
+    echo -e "  ${DIM}Press any key to go back${NC}"
+    tui_read_key > /dev/null
+    scan_cleanup_tmp
+    return
+  fi
+
+  local cursor=0
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Filesystem scan${NC}   ${DIM}Space toggle · d delete selected · q back${NC}\n"
+
+    for (( i=0; i<n; i++ )); do
+      local mark; [[ "${selected[$i]}" == true ]] && mark="${RED}✓${NC}" || mark=" "
+      if (( i == cursor )); then
+        echo -e "  ${GREEN}❯${NC} [${mark}] ${BOLD}${labels[$i]}${NC}"
+      else
+        echo -e "    [${mark}] ${labels[$i]}"
+      fi
+      echo -e "         ${DIM}${counts[$i]} item(s) · ${sizes[$i]}${NC}"
+    done
+
+    # Count selected
+    local sel_count=0
+    for s in "${selected[@]}"; do [[ "$s" == true ]] && (( sel_count++ )) || true; done
+    echo -e "\n  ${DIM}↑↓ navigate   Space toggle   d delete (${sel_count} selected)   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( cursor > 0 ))   && (( cursor-- )) || true ;;
+      $'\x1b[B'|j) (( cursor < n-1 )) && (( cursor++ )) || true ;;
+      ' ')
+        [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true
+        ;;
+      d|D)
+        (( sel_count == 0 )) && continue
+        tui_clear
+        tui_header
+        echo -e "  ${BOLD}Confirm deletion${NC}\n"
+        for (( i=0; i<n; i++ )); do
+          [[ "${selected[$i]}" == true ]] && echo -e "  ${RED}✗${NC} ${labels[$i]}  ${DIM}(${counts[$i]} items · ${sizes[$i]})${NC}"
+        done
+        echo -e "\n  ${YELLOW}This cannot be undone.${NC}"
+        echo -e "  ${DIM}Press Enter to confirm, q to cancel${NC}\n"
+        local confirm; confirm=$(tui_read_key)
+        if [[ "$confirm" == $'\n' || "$confirm" == $'\r' || "$confirm" == '' ]]; then
+          log "=== scan deletion started ==="
+          for (( i=0; i<n; i++ )); do
+            [[ "${selected[$i]}" == true ]] || continue
+            info "Removing: ${labels[$i]}..."
+            scan_delete_category "${labels[$i]}"
+            ok "Done"
+          done
+          log "=== scan deletion done ==="
+          tui_flash "Deletion complete"
+          scan_cleanup_tmp
+          return
+        fi
+        ;;
+      q|Q|$'\x1b')
+        scan_cleanup_tmp
+        return
+        ;;
+    esac
+  done
+}
+
 tui_main() {
   tput civis
   trap 'tput cnorm; tput clear' EXIT INT TERM
 
   local -a items=(
     "Run cleanup now"
+    "Scan filesystem"
     "Configure modules"
     "Configure schedule"
     "Configure notifications"
@@ -539,11 +762,12 @@ tui_main() {
       ''|$'\n'|$'\r')
         case $selected in
           0) tui_run ;;
-          1) tui_modules ;;
-          2) tui_schedule ;;
-          3) tui_notifications ;;
-          4) tui_log ;;
-          5) tput cnorm; tput clear; exit 0 ;;
+          1) tui_scan ;;
+          2) tui_modules ;;
+          3) tui_schedule ;;
+          4) tui_notifications ;;
+          5) tui_log ;;
+          6) tput cnorm; tput clear; exit 0 ;;
         esac
         ;;
       q|Q) tput cnorm; tput clear; exit 0 ;;
@@ -943,6 +1167,18 @@ parse_args() {
       --enable-go)             GO_CACHE=true ;;
       --enable-thumbnails)     THUMBNAIL_CACHE=true ;;
       --html-report)           HTML_REPORT=true ;;
+      --scan)
+        # shellcheck source=/dev/null
+        [[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
+        touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/cleanux.log"
+        echo -e "\n${BOLD}Filesystem scan${NC}\n"
+        echo -e "${DIM}Scanning...${NC}\n"
+        run_scan | while IFS='|' read -r label count size; do
+          printf "  ${YELLOW}▸${NC} %-50s ${BOLD}%s${NC} items · %s\n" "$label" "$count" "$size"
+        done
+        echo ""
+        scan_cleanup_tmp
+        exit 0 ;;
       --schedule)
         [[ $# -gt 1 && ! "$2" =~ ^- ]] && { cmd_schedule "$2"; shift; } || cmd_schedule
         exit 0 ;;
