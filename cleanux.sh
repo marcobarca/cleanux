@@ -5,7 +5,6 @@
 set -euo pipefail
 
 readonly VERSION="2.0.0"
-readonly SCRIPT_NAME="cleanux"
 
 # ── Defaults (override via config file) ───────────────────────────────────────
 # Docker
@@ -145,7 +144,8 @@ notify() {
   [[ -z "$WEBHOOK_URL" && -z "$NOTIFY_EMAIL" ]] && return
 
   if [[ -n "$WEBHOOK_URL" ]] && has_cmd curl; then
-    local payload="{\"text\": \"🧹 *cleanux* on \`$(hostname)\`: ${msg}\"}"
+    local hostname; hostname=$(hostname)
+    local payload="{\"text\": \"*cleanux* on \`${hostname}\`: ${msg}\"}"
     curl -s -X POST "$WEBHOOK_URL" \
       -H "Content-Type: application/json" \
       -d "$payload" >> "$LOG_FILE" 2>&1 || warn "Webhook notification failed"
@@ -220,24 +220,6 @@ interactive_select() {
     "Core dumps"
     "Temp files /tmp"
     "Thumbnail cache (opt-in)"
-  )
-  declare -a STATES=(
-    "$DOCKER_BUILDER"
-    "$DOCKER_VOLUMES"
-    "$JOURNAL_KEEP_DAYS"
-    "$APT_CLEAN"
-    "$NPM_CACHE"
-    "$CARGO_CACHE"
-    "$GO_CACHE"
-    "$SNAP_REVISIONS"
-    "$CORE_DUMPS"
-    "$(( TMP_MAX_DAYS > 0 ))"
-    "$THUMBNAIL_CACHE"
-  )
-  declare -a VARS=(
-    DOCKER_BUILDER DOCKER_VOLUMES JOURNAL_ENABLE APT_CLEAN
-    NPM_CACHE CARGO_CACHE GO_CACHE SNAP_REVISIONS CORE_DUMPS
-    TMP_ENABLE THUMBNAIL_CACHE
   )
 
   # Normalize states to true/false
@@ -691,6 +673,7 @@ parse_args() {
 main() {
   parse_args "$@"
 
+  # shellcheck source=/dev/null
   [[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
 
   touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/cleanux.log"
