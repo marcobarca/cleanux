@@ -984,38 +984,39 @@ print(json.dumps({
 
   if [[ -z "$payload" ]]; then
     echo "ERROR: python3 is required to build the API request"
-    return 1
+    return 0
   fi
 
-  local response
-  response=$(curl -s -f \
+  local http_response
+  http_response=$(curl -s \
     -H "Content-Type: application/json" \
     ${AI_API_KEY:+-H "Authorization: Bearer ${AI_API_KEY}"} \
     -d "$payload" \
-    "${endpoint}/chat/completions" 2>/dev/null)
+    "${endpoint}/chat/completions" 2>&1) || true
 
-  if [[ -z "$response" ]]; then
-    echo "ERROR: No response from endpoint. Check AI_ENDPOINT and connectivity."
-    return 1
+  if [[ -z "$http_response" ]]; then
+    echo "ERROR: No response from endpoint — check AI_ENDPOINT and network connectivity"
+    return 0
   fi
 
-  # Extract content from response
   local content
-  content=$(echo "$response" | python3 -c "
+  content=$(printf '%s' "$http_response" | python3 -c "
 import sys, json
 try:
   r = json.load(sys.stdin)
   if 'error' in r:
-    print('ERROR: ' + r['error'].get('message', str(r['error'])))
+    msg = r['error'].get('message', str(r['error'])) if isinstance(r['error'], dict) else str(r['error'])
+    print('ERROR: ' + msg)
   else:
     print(r['choices'][0]['message']['content'])
 except Exception as e:
   print('ERROR: Could not parse response — ' + str(e))
-" 2>/dev/null)
+  import sys; sys.stderr.write(sys.stdin.read() + '\n')
+" 2>/dev/null) || true
 
   if [[ -z "$content" ]]; then
-    echo "ERROR: Could not parse API response."
-    return 1
+    echo "ERROR: Could not parse API response — raw: ${http_response:0:200}"
+    return 0
   fi
 
   echo "$content"
@@ -1088,12 +1089,14 @@ tui_ai_scan() {
   fi
 
   echo -e "  ${DIM}Collecting system information...${NC}"
-  local context; context=$(ai_collect_context 2>/dev/null)
+  local context
+  context=$(ai_collect_context 2>/dev/null) || true
 
   echo -e "  ${DIM}Querying ${AI_MODEL:-model} at ${AI_ENDPOINT}...${NC}"
   echo -e "  ${YELLOW}⚠${NC}  ${DIM}System paths and sizes will be sent to the configured endpoint.${NC}\n"
 
-  local response; response=$(ai_query "$context")
+  local response
+  response=$(ai_query "$context") || true
 
   if [[ "$response" == ERROR:* ]]; then
     tui_clear
