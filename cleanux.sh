@@ -240,7 +240,7 @@ tui_clear() { tput clear 2>/dev/null || printf '\033[2J\033[H'; }
 tui_splash() {
   tui_clear
   echo ""
-  echo -e "  ${GREEN}▄▄▄▄ ▄▄    ▄▄▄▄▄  ▄▄▄  ▄▄  ▄▄ ▄▄ ▄▄ ▄▄ ▄▄${NC}"
+  echo -e "  ${GREEN} ▄▄▄▄ ▄▄    ▄▄▄▄▄  ▄▄▄  ▄▄  ▄▄ ▄▄ ▄▄ ▄▄ ▄▄${NC}"
   echo -e "  ${GREEN}██▀▀▀ ██    ██▄▄  ██▀██ ███▄██ ██ ██ ▀█▄█▀${NC}"
   echo -e "  ${GREEN}▀████ ██▄▄▄ ██▄▄▄ ██▀██ ██ ▀██ ▀███▀ ██ ██${NC}"
   echo ""
