@@ -279,11 +279,14 @@ TOOL_DEFINITIONS = [
 
 # ── HTTP client ────────────────────────────────────────────────────────────────
 
-def _http_post(url, api_key, payload):
+def _http_post(url, api_key, payload, azure=False):
     data    = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        if azure:
+            headers["api-key"] = api_key
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -292,7 +295,9 @@ def _http_post(url, api_key, payload):
         body = e.read().decode(errors="replace")
         hint = ""
         if e.code == 404:
-            hint = f" — check that your endpoint includes /v1 (tried: {url})"
+            hint = f" (tried: {url})"
+            if not azure:
+                hint = f" — check that your endpoint includes /v1 (tried: {url})"
         elif e.code == 401:
             hint = " — invalid API key"
         elif e.code == 403:
@@ -322,7 +327,14 @@ def run_scan(endpoint, api_key, model):
     # Normalise: strip accidental /chat/completions suffix the user may have pasted
     if ep.endswith("/chat/completions"):
         ep = ep[: -len("/chat/completions")]
-    url = f"{ep}/chat/completions"
+
+    # Azure OpenAI uses a different URL structure and auth header
+    azure = ".openai.azure.com" in ep
+    if azure:
+        # https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=...
+        url = f"{ep}/openai/deployments/{model}/chat/completions?api-version=2024-10-21"
+    else:
+        url = f"{ep}/chat/completions"
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -336,13 +348,15 @@ def run_scan(endpoint, api_key, model):
     ]
 
     for round_n in range(MAX_TOOL_ROUNDS):
-        response = _http_post(url, api_key, {
-            "model":       model,
+        payload = {
             "messages":    messages,
             "tools":       TOOL_DEFINITIONS,
             "tool_choice": "auto",
             "temperature": 0.1,
-        })
+        }
+        if not azure:
+            payload["model"] = model
+        response = _http_post(url, api_key, payload, azure=azure)
 
         if "error" in response:
             err = response["error"]
