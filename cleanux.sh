@@ -1208,13 +1208,36 @@ tui_ai_scan() {
       ''|$'\n'|$'\r')
         # Detail view
         tui_clear; tui_header
-        echo -e "  ${BOLD}${titles[$cursor]}${NC}\n"
         local rc; rc=$(_risk_color "${risks[$cursor]}")
-        echo -e "  Risk     : ${rc}${risks[$cursor]}${NC}"
-        echo -e "  Est. size: ${DIM}${sizes[$cursor]}${NC}\n"
-        echo -e "  ${explanations[$cursor]}\n"
-        [[ -n "${commands[$cursor]}" ]] && echo -e "  ${DIM}Command: ${commands[$cursor]}${NC}\n"
-        echo -e "  ${DIM}Space to toggle selection   q back${NC}"
+        echo -e "  ${BOLD}${titles[$cursor]}${NC}"
+        echo -e "  ${DIM}────────────────────────────────────────────────${NC}\n"
+        echo -e "  ${DIM}Risk${NC}        ${rc}● ${risks[$cursor]}${NC}"
+        echo -e "  ${DIM}Est. freed${NC}  ${sizes[$cursor]}\n"
+        echo -e "  ${DIM}Why:${NC}"
+        echo -e "  ${explanations[$cursor]}" | fold -s -w 72 | sed 's/^/  /'
+        echo ""
+        if [[ -n "${commands[$cursor]}" ]]; then
+          echo -e "  ${DIM}Command:${NC}"
+          echo -e "  ${BOLD}${commands[$cursor]}${NC}\n"
+        fi
+        local det_paths
+        det_paths=$(python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+paths = d.get('recommendations', [])[${cursor}].get('paths', [])
+print('\n'.join(paths[:10]))
+" "$raw" 2>/dev/null) || true
+        if [[ -n "$det_paths" ]]; then
+          echo -e "  ${DIM}Paths:${NC}"
+          while IFS= read -r p; do
+            [[ -n "$p" ]] && echo -e "  ${DIM}  $p${NC}"
+          done <<< "$det_paths"
+          echo ""
+        fi
+        [[ "${selected[$cursor]}" == true ]] \
+          && echo -e "  ${GREEN}✓ Selected for execution${NC}\n" \
+          || echo -e "  ${DIM}Not selected${NC}\n"
+        echo -e "  ${DIM}Space to toggle   q back${NC}"
         local dk; dk=$(tui_read_key)
         [[ "$dk" == ' ' ]] && { [[ "${selected[$cursor]}" == true ]] && selected[$cursor]=false || selected[$cursor]=true; }
         ;;
