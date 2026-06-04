@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-readonly VERSION="2.1.3"
+readonly VERSION="2.1.4"
 
 # ── Defaults (override via config file) ───────────────────────────────────────
 # Docker
