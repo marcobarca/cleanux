@@ -204,68 +204,343 @@ HTML
   ok "HTML report saved to ${HTML_REPORT_PATH}"
 }
 
-# ── Interactive mode ──────────────────────────────────────────────────────────
-interactive_select() {
-  echo -e "\n${BOLD}Select modules to run${NC} (toggle by number, Enter to confirm)\n"
+# ── Config writer ─────────────────────────────────────────────────────────────
+conf_set() {
+  local key="$1" val="$2"
+  if [[ ! -f "$CONF_FILE" ]]; then
+    touch "$CONF_FILE" 2>/dev/null || { warn "Cannot write to ${CONF_FILE}"; return 1; }
+  fi
+  if grep -q "^${key}=" "$CONF_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$CONF_FILE"
+  else
+    echo "${key}=${val}" >> "$CONF_FILE"
+  fi
+  eval "${key}=${val}" 2>/dev/null || true
+}
 
-  declare -a LABELS=(
-    "Docker (build cache, containers, images)"
-    "Docker volumes (opt-in)"
-    "Journal logs"
-    "Package manager (apt/dnf/pacman/brew)"
-    "Dev caches (npm, pip, yarn, pnpm)"
-    "Cargo cache (opt-in)"
-    "Go cache (opt-in)"
+# ── TUI ───────────────────────────────────────────────────────────────────────
+
+tui_clear() { tput clear 2>/dev/null || printf '\033[2J\033[H'; }
+
+tui_header() {
+  local pct; pct=$(disk_used_pct)
+  local free; free=$(disk_free_human)
+  local color=$GREEN
+  (( pct >= 90 )) && color=$RED || (( pct >= 75 )) && color=$YELLOW
+  echo -e "  ${BOLD}cleanux${NC} v${VERSION}   ${DIM}disk: ${color}${pct}%${NC}${DIM} · ${free} free${NC}\n"
+}
+
+tui_flash() {
+  echo -e "\n  ${GREEN}✔${NC} $*"
+  sleep 1
+}
+
+tui_read_key() {
+  local key seq
+  IFS= read -r -s -n1 key
+  if [[ "$key" == $'\x1b' ]]; then
+    IFS= read -r -s -n2 -t 0.1 seq || true
+    key="${key}${seq}"
+  fi
+  printf '%s' "$key"
+}
+
+tui_modules() {
+  local -a labels=(
+    "Docker build cache"
+    "Docker stopped containers"
+    "Docker dangling images"
+    "Docker unused volumes     (opt-in)"
+    "Journal logs (${JOURNAL_KEEP_DAYS} days)"
+    "APT / dnf / pacman cache"
+    "APT autoremove            (opt-in)"
+    "npm / yarn / pnpm cache"
+    "pip cache"
+    "Cargo registry cache      (opt-in)"
+    "Go build cache            (opt-in)"
     "Snap old revisions"
     "Core dumps"
-    "Temp files /tmp"
-    "Thumbnail cache (opt-in)"
+    "Temp files /tmp (${TMP_MAX_DAYS} days)"
+    "Thumbnail cache           (opt-in)"
   )
+  local -a state=(
+    "$DOCKER_BUILDER" "$DOCKER_CONTAINERS" "$DOCKER_IMAGES" "$DOCKER_VOLUMES"
+    "true" "$APT_CLEAN" "$APT_AUTOREMOVE" "$NPM_CACHE" "$PIP_CACHE"
+    "$CARGO_CACHE" "$GO_CACHE" "$SNAP_REVISIONS" "$CORE_DUMPS"
+    "true" "$THUMBNAIL_CACHE"
+  )
+  (( JOURNAL_KEEP_DAYS == 0 )) && state[4]=false
+  (( TMP_MAX_DAYS == 0 ))      && state[13]=false
 
-  # Normalize states to true/false
-  local n=${#LABELS[@]}
-  declare -a ENABLED=()
-  ENABLED[0]=$( [[ "$DOCKER_BUILDER" == true ]]    && echo true || echo false )
-  ENABLED[1]=$( [[ "$DOCKER_VOLUMES" == true ]]    && echo true || echo false )
-  ENABLED[2]=true
-  ENABLED[3]=$( [[ "$APT_CLEAN" == true ]]         && echo true || echo false )
-  ENABLED[4]=$( [[ "$NPM_CACHE" == true ]]         && echo true || echo false )
-  ENABLED[5]=$( [[ "$CARGO_CACHE" == true ]]       && echo true || echo false )
-  ENABLED[6]=$( [[ "$GO_CACHE" == true ]]          && echo true || echo false )
-  ENABLED[7]=$( [[ "$SNAP_REVISIONS" == true ]]    && echo true || echo false )
-  ENABLED[8]=$( [[ "$CORE_DUMPS" == true ]]        && echo true || echo false )
-  ENABLED[9]=$( (( TMP_MAX_DAYS > 0 ))             && echo true || echo false )
-  ENABLED[10]=$( [[ "$THUMBNAIL_CACHE" == true ]]  && echo true || echo false )
+  local selected=0
+  local n=${#labels[@]}
 
   while true; do
-    echo ""
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Modules${NC}   ${DIM}Space toggle · s save · q back${NC}\n"
     for (( i=0; i<n; i++ )); do
-      local mark; [[ "${ENABLED[$i]}" == true ]] && mark="${GREEN}✓${NC}" || mark=" "
-      printf "  %2d. [%b] %s\n" $(( i+1 )) "$mark" "${LABELS[$i]}"
+      local mark; [[ "${state[$i]}" == true ]] && mark="${GREEN}✓${NC}" || mark=" "
+      if (( i == selected )); then
+        echo -e "  ${GREEN}❯${NC} [${mark}] ${BOLD}${labels[$i]}${NC}"
+      else
+        echo -e "    [${mark}] ${labels[$i]}"
+      fi
     done
-    echo ""
-    read -r -p "Toggle number (or Enter to start): " choice
-    [[ -z "$choice" ]] && break
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )); then
-      local idx=$(( choice - 1 ))
-      [[ "${ENABLED[$idx]}" == true ]] && ENABLED[$idx]=false || ENABLED[$idx]=true
-    else
-      warn "Invalid choice: $choice"
-    fi
-  done
+    echo -e "\n  ${DIM}↑↓ navigate   Space toggle   s save   q back${NC}"
 
-  # Apply selections
-  DOCKER_BUILDER="${ENABLED[0]}"
-  DOCKER_VOLUMES="${ENABLED[1]}"
-  [[ "${ENABLED[2]}" == false ]] && JOURNAL_KEEP_DAYS=0
-  APT_CLEAN="${ENABLED[3]}"
-  NPM_CACHE="${ENABLED[4]}"
-  CARGO_CACHE="${ENABLED[5]}"
-  GO_CACHE="${ENABLED[6]}"
-  SNAP_REVISIONS="${ENABLED[7]}"
-  CORE_DUMPS="${ENABLED[8]}"
-  [[ "${ENABLED[9]}" == false ]] && TMP_MAX_DAYS=0
-  THUMBNAIL_CACHE="${ENABLED[10]}"
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( selected > 0 ))   && (( selected-- )) || true ;;
+      $'\x1b[B'|j) (( selected < n-1 )) && (( selected++ )) || true ;;
+      ' ')
+        [[ "${state[$selected]}" == true ]] && state[$selected]=false || state[$selected]=true
+        ;;
+      s|S)
+        DOCKER_BUILDER="${state[0]}"
+        DOCKER_CONTAINERS="${state[1]}"
+        DOCKER_IMAGES="${state[2]}"
+        DOCKER_VOLUMES="${state[3]}"
+        [[ "${state[4]}"  == false ]] && JOURNAL_KEEP_DAYS=0 || { (( JOURNAL_KEEP_DAYS == 0 )) && JOURNAL_KEEP_DAYS=14; }
+        APT_CLEAN="${state[5]}"
+        APT_AUTOREMOVE="${state[6]}"
+        NPM_CACHE="${state[7]}"
+        PIP_CACHE="${state[8]}"
+        CARGO_CACHE="${state[9]}"
+        GO_CACHE="${state[10]}"
+        SNAP_REVISIONS="${state[11]}"
+        CORE_DUMPS="${state[12]}"
+        [[ "${state[13]}" == false ]] && TMP_MAX_DAYS=0  || { (( TMP_MAX_DAYS == 0 )) && TMP_MAX_DAYS=7; }
+        THUMBNAIL_CACHE="${state[14]}"
+        conf_set DOCKER_BUILDER    "$DOCKER_BUILDER"
+        conf_set DOCKER_CONTAINERS "$DOCKER_CONTAINERS"
+        conf_set DOCKER_IMAGES     "$DOCKER_IMAGES"
+        conf_set DOCKER_VOLUMES    "$DOCKER_VOLUMES"
+        conf_set JOURNAL_KEEP_DAYS "$JOURNAL_KEEP_DAYS"
+        conf_set APT_CLEAN         "$APT_CLEAN"
+        conf_set APT_AUTOREMOVE    "$APT_AUTOREMOVE"
+        conf_set NPM_CACHE         "$NPM_CACHE"
+        conf_set PIP_CACHE         "$PIP_CACHE"
+        conf_set CARGO_CACHE       "$CARGO_CACHE"
+        conf_set GO_CACHE          "$GO_CACHE"
+        conf_set SNAP_REVISIONS    "$SNAP_REVISIONS"
+        conf_set CORE_DUMPS        "$CORE_DUMPS"
+        conf_set TMP_MAX_DAYS      "$TMP_MAX_DAYS"
+        conf_set THUMBNAIL_CACHE   "$THUMBNAIL_CACHE"
+        tui_flash "Saved to ${CONF_FILE}"
+        return
+        ;;
+      q|Q|$'\x1b') return ;;
+    esac
+  done
+}
+
+tui_schedule() {
+  local current
+  current=$(grep -v '^#' /etc/cron.d/cleanux 2>/dev/null | awk '{print $1,$2,$3,$4,$5}' || echo "not set")
+  systemctl is-enabled cleanux.timer &>/dev/null && current="systemd timer"
+
+  local -a items=(
+    "Weekly — Sunday at 03:00"
+    "Daily  — 02:00"
+    "Custom cron expression"
+    "Use systemd timer"
+    "Remove schedule"
+    "Back"
+  )
+  local selected=0
+  local n=${#items[@]}
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Schedule${NC}\n"
+    echo -e "  Current: ${DIM}${current}${NC}\n"
+    for (( i=0; i<n; i++ )); do
+      if (( i == selected )); then
+        echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+      else
+        echo -e "    ${items[$i]}"
+      fi
+    done
+    echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( selected > 0 ))   && (( selected-- )) || true ;;
+      $'\x1b[B'|j) (( selected < n-1 )) && (( selected++ )) || true ;;
+      ''|$'\n'|$'\r')
+        case $selected in
+          0) cmd_schedule "0 3 * * 0"; tui_flash "Scheduled: every Sunday at 03:00"; return ;;
+          1) cmd_schedule "0 2 * * *"; tui_flash "Scheduled: every day at 02:00"; return ;;
+          2)
+            tui_clear; tui_header
+            echo -e "  ${BOLD}Custom cron expression${NC}\n"
+            echo -e "  ${DIM}minute hour day month weekday${NC}"
+            echo -e "  ${DIM}e.g.  0 3 * * 0   (Sunday 03:00)${NC}\n"
+            tput cnorm; printf "  > "; read -r expr; tput civis
+            if [[ -n "$expr" ]]; then
+              cmd_schedule "$expr"; tui_flash "Scheduled: ${expr}"; return
+            fi
+            ;;
+          3) cmd_systemd; tui_flash "systemd timer installed"; return ;;
+          4)
+            rm -f /etc/cron.d/cleanux
+            systemctl disable --now cleanux.timer 2>/dev/null || true
+            tui_flash "Schedule removed"; return
+            ;;
+          5) return ;;
+        esac
+        ;;
+      q|Q|$'\x1b') return ;;
+    esac
+  done
+}
+
+tui_notifications() {
+  local selected=0
+  local -a items=(
+    "Set webhook URL  (Slack / Discord)"
+    "Set email address"
+    "Clear all notifications"
+    "Back"
+  )
+  local n=${#items[@]}
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Notifications${NC}\n"
+    [[ -n "$WEBHOOK_URL" ]]  && echo -e "  Webhook : ${DIM}${WEBHOOK_URL}${NC}" \
+                             || echo -e "  Webhook : ${DIM}not set${NC}"
+    [[ -n "$NOTIFY_EMAIL" ]] && echo -e "  Email   : ${DIM}${NOTIFY_EMAIL}${NC}\n" \
+                             || echo -e "  Email   : ${DIM}not set${NC}\n"
+    for (( i=0; i<n; i++ )); do
+      if (( i == selected )); then
+        echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+      else
+        echo -e "    ${items[$i]}"
+      fi
+    done
+    echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( selected > 0 ))   && (( selected-- )) || true ;;
+      $'\x1b[B'|j) (( selected < n-1 )) && (( selected++ )) || true ;;
+      ''|$'\n'|$'\r')
+        tput cnorm
+        case $selected in
+          0)
+            tui_clear; tui_header
+            echo -e "  ${BOLD}Webhook URL${NC}  ${DIM}(Slack / Discord)${NC}\n"
+            printf "  > "; read -r WEBHOOK_URL
+            conf_set WEBHOOK_URL "\"${WEBHOOK_URL}\""
+            tui_flash "Saved"
+            ;;
+          1)
+            tui_clear; tui_header
+            echo -e "  ${BOLD}Email address${NC}\n"
+            printf "  > "; read -r NOTIFY_EMAIL
+            conf_set NOTIFY_EMAIL "\"${NOTIFY_EMAIL}\""
+            tui_flash "Saved"
+            ;;
+          2)
+            WEBHOOK_URL=""; NOTIFY_EMAIL=""
+            conf_set WEBHOOK_URL '""'; conf_set NOTIFY_EMAIL '""'
+            tui_flash "Cleared"
+            ;;
+          3) tput civis; return ;;
+        esac
+        tput civis
+        ;;
+      q|Q|$'\x1b') return ;;
+    esac
+  done
+}
+
+tui_log() {
+  tui_clear
+  tui_header
+  echo -e "  ${BOLD}Last log entries${NC}  ${DIM}${LOG_FILE}${NC}\n"
+  if [[ -f "$LOG_FILE" ]]; then
+    tail -30 "$LOG_FILE" | while IFS= read -r line; do echo "  $line"; done
+  else
+    echo -e "  ${DIM}No log file found.${NC}"
+  fi
+  echo -e "\n  ${DIM}Press any key to go back${NC}"
+  tui_read_key > /dev/null
+}
+
+tui_run() {
+  tput cnorm
+  tui_clear
+  FREED_TOTAL=0
+  declare -gA MODULE_FREED=()
+  _DISK_START=$(disk_kb)
+  clean_docker
+  clean_journal
+  clean_packages
+  clean_dev_caches
+  clean_snap
+  clean_core_dumps
+  clean_tmp
+  print_summary
+  if [[ "$DRY_RUN" == false ]]; then
+    local freed_human; freed_human=$(human_bytes "$FREED_TOTAL" 2>/dev/null || echo "0 B")
+    notify "Cleanup complete — freed ${freed_human} — disk at $(disk_used_pct)%"
+    log "=== cleanux done — freed ${freed_human} ==="
+  fi
+  echo -e "  ${DIM}Press any key to go back${NC}"
+  read -r -s -n1
+  tput civis
+}
+
+tui_main() {
+  tput civis
+  trap 'tput cnorm; tput clear' EXIT INT TERM
+
+  local -a items=(
+    "Run cleanup now"
+    "Configure modules"
+    "Configure schedule"
+    "Configure notifications"
+    "View log"
+    "Exit"
+  )
+  local selected=0
+  local n=${#items[@]}
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Main menu${NC}\n"
+    for (( i=0; i<n; i++ )); do
+      if (( i == selected )); then
+        echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+      else
+        echo -e "    ${items[$i]}"
+      fi
+    done
+    echo -e "\n  ${DIM}↑↓ navigate   Enter select   q quit${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( selected > 0 ))   && (( selected-- )) || true ;;
+      $'\x1b[B'|j) (( selected < n-1 )) && (( selected++ )) || true ;;
+      ''|$'\n'|$'\r')
+        case $selected in
+          0) tui_run ;;
+          1) tui_modules ;;
+          2) tui_schedule ;;
+          3) tui_notifications ;;
+          4) tui_log ;;
+          5) tput cnorm; tput clear; exit 0 ;;
+        esac
+        ;;
+      q|Q) tput cnorm; tput clear; exit 0 ;;
+    esac
+  done
 }
 
 # ── Setup helpers ─────────────────────────────────────────────────────────────
@@ -671,6 +946,17 @@ parse_args() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
+  # No args + interactive terminal → launch TUI
+  if [[ $# -eq 0 && -t 0 ]]; then
+    # shellcheck source=/dev/null
+    [[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
+    touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/cleanux.log"
+    rotate_log
+    load_plugins
+    tui_main
+    exit 0
+  fi
+
   parse_args "$@"
 
   # shellcheck source=/dev/null
@@ -695,7 +981,7 @@ main() {
     fi
   fi
 
-  [[ "$INTERACTIVE" == true ]] && interactive_select
+  [[ "$INTERACTIVE" == true ]] && tui_modules
 
   _DISK_START=$(disk_kb)
 
