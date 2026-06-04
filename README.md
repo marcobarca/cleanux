@@ -1,7 +1,7 @@
 # cleanux
 
 [![ShellCheck](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml)
-![Version](https://img.shields.io/badge/version-2.1.6-blue)
+![Version](https://img.shields.io/badge/version-2.1.7-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Bash script that removes temporary files and caches that accumulate on Linux servers and development machines: Docker build cache, journal logs, package manager caches, dev tool caches, snap old revisions, core dumps, and old temp files.
