@@ -1024,6 +1024,7 @@ _ai_profile_add() {
   echo -e "  ${BOLD}New profile${NC}\n"
   printf "  Name     > "; read -r p_name
   [[ -z "$p_name" ]] && tput civis && return
+  echo -e "  ${DIM}Endpoint must include /v1 — e.g. https://api.openai.com/v1 or http://localhost:11434/v1${NC}"
   printf "  Endpoint > "; read -r p_endpoint
   printf "  API key  > "; read -r -s p_key; echo ""
   printf "  Model    > "; read -r p_model

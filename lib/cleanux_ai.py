@@ -290,7 +290,14 @@ def _http_post(url, api_key, payload):
             return json.load(resp)
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        return {"error": {"message": f"HTTP {e.code}: {body[:400]}"}}
+        hint = ""
+        if e.code == 404:
+            hint = f" — check that your endpoint includes /v1 (tried: {url})"
+        elif e.code == 401:
+            hint = " — invalid API key"
+        elif e.code == 403:
+            hint = " — access denied, check your API key permissions"
+        return {"error": {"message": f"HTTP {e.code}{hint}: {body[:300]}"}}
     except Exception as e:
         return {"error": {"message": str(e)}}
 
@@ -311,7 +318,11 @@ def _execute_tool(name, args):
 
 def run_scan(endpoint, api_key, model):
     """Run the tool-use loop and return a recommendations dict."""
-    url = f"{endpoint.rstrip('/')}/chat/completions"
+    ep = endpoint.rstrip("/")
+    # Normalise: strip accidental /chat/completions suffix the user may have pasted
+    if ep.endswith("/chat/completions"):
+        ep = ep[: -len("/chat/completions")]
+    url = f"{ep}/chat/completions"
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
