@@ -22,24 +22,30 @@ MAX_TOOL_ROUNDS = 10
 
 SYSTEM_PROMPT = (
     "You are a Linux system administrator assistant. "
-    "Your job is to identify disk space that can be safely reclaimed on this machine.\n\n"
-    "Use the available tools to inspect the system. Start with disk_overview to get "
-    "a picture of overall usage, then drill into specific areas.\n\n"
-    "When you have gathered enough information, call submit_recommendations with a "
-    "prioritised list of specific, actionable cleanup tasks (largest impact first).\n\n"
-    "For each recommendation, write a thorough explanation that covers:\n"
-    "  1. What the service or component is and what it does on a Linux system\n"
-    "  2. What these files/caches are and why they accumulate over time\n"
-    "  3. Who or what creates and uses them (system daemons, dev tools, package managers, etc.)\n"
-    "  4. What the concrete impact of removing them will be (what is lost, what regenerates automatically)\n"
-    "  5. Any caveats or situations where removing them could be problematic\n\n"
-    "Write the explanation as flowing prose (2-5 sentences), not bullet points. "
-    "Assume the reader is a developer who knows Linux basics but may not know every subsystem in depth.\n\n"
+    "Your job is to do a full health scan of this machine covering two areas:\n\n"
+    "  1. DISK — identify space that can be safely reclaimed (caches, logs, build artefacts, etc.)\n"
+    "  2. LOAD & PROCESSES — identify heavyweight, orphaned, or misbehaving processes and services "
+    "(high CPU/RAM consumers that look abnormal, zombie processes, services crashing and restarting "
+    "in a loop, failed systemd units, processes leaking file descriptors, etc.)\n\n"
+    "Workflow:\n"
+    "  - Start with disk_overview and system_load to get an overall picture.\n"
+    "  - Use disk tools (large_files, docker_info, journal_logs, dev_caches, etc.) for storage.\n"
+    "  - Use load tools (top_processes, zombie_processes, systemd_services, open_files) for processes.\n"
+    "  - Call both sort_by=cpu and sort_by=memory variants of top_processes.\n"
+    "  - When you have enough data, call submit_recommendations.\n\n"
+    "For each recommendation, write a thorough explanation covering:\n"
+    "  1. What the service, process, or component is and what it does\n"
+    "  2. Why it is accumulating space or consuming excessive resources\n"
+    "  3. Who or what creates/runs it\n"
+    "  4. What the concrete impact of the action will be (what is lost, what recovers automatically)\n"
+    "  5. Any caveats\n\n"
+    "Write explanations as flowing prose (2-5 sentences). "
+    "Assume the reader is a developer who knows Linux basics.\n\n"
     "Risk levels:\n"
-    "  safe   — always fine to remove (caches, build artefacts)\n"
-    "  low    — very likely fine, minimal chance of side effects\n"
-    "  medium — review before removing, could affect running services\n"
-    "  high   — destructive, data loss possible if wrong\n"
+    "  safe   — always fine (caches, build artefacts, clearly orphaned processes)\n"
+    "  low    — very likely fine, minimal side effects\n"
+    "  medium — review before acting, could affect running services\n"
+    "  high   — destructive or service-interrupting, requires explicit confirmation\n"
 )
 
 # ── Shell helpers ─────────────────────────────────────────────────────────────
@@ -149,6 +155,69 @@ def tool_temp_files(max_age_days=7):
         "crash": _shell("find /var/crash /tmp /var -maxdepth 3 \\( -name '*.crash' -o -name 'core' -o -name 'core.*' \\) -print0 2>/dev/null | xargs -0 du -sh 2>/dev/null | sort -rh | head -10"),
     }
 
+def tool_system_load():
+    """Current CPU load, RAM/swap usage, and uptime."""
+    return {
+        "uptime":     _run(["uptime"]),
+        "load_avg":   _shell("cat /proc/loadavg"),
+        "cpu_count":  _shell("nproc"),
+        "cpu_model":  _shell("grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2- | xargs"),
+        "ram":        _shell("free -h | grep -E '^Mem|^Swap'"),
+        "vmstat":     _shell("vmstat 1 2 2>/dev/null | tail -1"),
+    }
+
+def tool_top_processes(sort_by="cpu", count=20):
+    """List top processes sorted by CPU or memory usage."""
+    n = min(max(int(count), 5), 40)
+    if sort_by == "memory":
+        cmd = f"ps aux --sort=-%mem | head -{n + 1}"
+    else:
+        cmd = f"ps aux --sort=-%cpu | head -{n + 1}"
+    return {
+        "sort_by":   sort_by,
+        "processes": _shell(cmd),
+    }
+
+def tool_zombie_processes():
+    """Find zombie/defunct processes and their parents."""
+    zombies = _shell("ps aux | awk 'NR==1 || $8==\"Z\"'")
+    count   = _shell("ps aux | awk '$8==\"Z\"' | wc -l").strip()
+    parents = ""
+    if count and count != "0":
+        parents = _shell(
+            "ps aux | awk '$8==\"Z\"{print $1,$2,$11}' | "
+            "while read u pid cmd; do "
+            "  ppid=$(awk '/PPid/{print $2}' /proc/$pid/status 2>/dev/null); "
+            "  [ -n \"$ppid\" ] && echo \"zombie PID=$pid ($cmd) parent=$ppid ($(ps -p $ppid -o comm= 2>/dev/null))\"; "
+            "done"
+        )
+    return {"count": count, "zombies": zombies, "parent_info": parents}
+
+def tool_systemd_services():
+    """Systemd failed units, high-resource services, and resource usage by cgroup."""
+    return {
+        "failed":       _run(["systemctl", "--failed", "--no-pager", "--plain"]),
+        "running":      _shell("systemctl list-units --type=service --state=running --no-pager --plain 2>/dev/null | head -40"),
+        "cgroup_top":   _shell("systemd-cgtop -n 1 -b --depth=3 2>/dev/null | head -25"),
+        "high_restart": _shell(
+            "systemctl list-units --type=service --state=running --no-pager --plain 2>/dev/null | "
+            "awk '{print $1}' | xargs -I{} systemctl show {} --property=NRestarts --value 2>/dev/null | "
+            "paste - <(systemctl list-units --type=service --state=running --no-pager --plain 2>/dev/null | awk '{print $1}') | "
+            "awk '$1+0 > 3 {print $1\" restarts: \"$2}' | head -10"
+        ),
+    }
+
+def tool_open_files(top_n=15):
+    """Processes holding the most open file descriptors."""
+    cmd = (
+        f"ls /proc/[0-9]*/fd 2>/dev/null | awk -F/ '{{print $3}}' | sort | uniq -c | sort -rn | head -{top_n} | "
+        "while read cnt pid; do "
+        "  comm=$(cat /proc/$pid/comm 2>/dev/null || echo '?'); "
+        "  echo \"$cnt fd  PID=$pid  $comm\"; "
+        "done"
+    )
+    return {"top_fd": _shell(cmd)}
+
 # ── Tool registry ──────────────────────────────────────────────────────────────
 
 TOOL_FUNCS = {
@@ -160,6 +229,11 @@ TOOL_FUNCS = {
     "dev_caches":       tool_dev_caches,
     "snap_revisions":   tool_snap_revisions,
     "temp_files":       tool_temp_files,
+    "system_load":      tool_system_load,
+    "top_processes":    tool_top_processes,
+    "zombie_processes": tool_zombie_processes,
+    "systemd_services": tool_systemd_services,
+    "open_files":       tool_open_files,
 }
 
 TOOL_DEFINITIONS = [
@@ -250,9 +324,62 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "system_load",
+            "description": "Current CPU load averages, RAM/swap usage, uptime, and vmstat snapshot",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "top_processes",
+            "description": "List top processes by CPU or memory consumption",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sort_by": {"type": "string", "enum": ["cpu", "memory"], "description": "Sort dimension (default: cpu)"},
+                    "count":   {"type": "integer", "description": "Number of processes to return (default 20, max 40)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "zombie_processes",
+            "description": "Find zombie/defunct processes and identify their parent processes",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "systemd_services",
+            "description": "Systemd failed units, running services, cgroup resource usage, and services with many restarts",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_files",
+            "description": "Processes holding the most open file descriptors",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "top_n": {"type": "integer", "description": "How many processes to list (default 15)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "submit_recommendations",
             "description": (
-                "Submit the final cleanup recommendations. "
+                "Submit the final recommendations. "
                 "Call this once you have gathered enough data — it ends the analysis."
             ),
             "parameters": {
@@ -260,22 +387,27 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "summary": {
                         "type": "string",
-                        "description": "One or two sentence summary of the findings",
+                        "description": "2-3 sentence summary covering both disk and load findings",
                     },
                     "recommendations": {
                         "type": "array",
-                        "description": "Cleanup actions sorted by estimated space freed (largest first)",
+                        "description": (
+                            "All recommended actions — disk cleanup AND load/process fixes. "
+                            "Sort by impact: disk items by estimated_bytes desc, process items by severity. "
+                            "Include a 'category' field to distinguish them."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
                                 "title":           {"type": "string", "description": "Short action title"},
-                                "explanation":     {"type": "string", "description": "Full explanation: what the service/component is, what these files are and why they accumulate, who creates and uses them, what happens after removal (what is lost vs what regenerates), and any caveats. 2-5 sentences of prose."},
-                                "command":         {"type": "string", "description": "Shell command to execute (omit if paths-only)"},
-                                "paths":           {"type": "array", "items": {"type": "string"}, "description": "Specific paths to delete (max 20)"},
-                                "estimated_bytes": {"type": "integer", "description": "Estimated bytes freed (0 if unknown)"},
+                                "category":        {"type": "string", "enum": ["disk", "process", "service", "memory"], "description": "Type of recommendation"},
+                                "explanation":     {"type": "string", "description": "Full explanation: what the service/component is, what these files or processes are and why they accumulate or run, who creates and uses them, what happens after the action (what is lost vs what regenerates or recovers), and any caveats. 2-5 sentences of prose."},
+                                "command":         {"type": "string", "description": "Shell command to execute (kill, systemctl stop/disable, rm, docker prune, etc.)"},
+                                "paths":           {"type": "array", "items": {"type": "string"}, "description": "Specific paths to delete (max 20, disk category only)"},
+                                "estimated_bytes": {"type": "integer", "description": "Estimated bytes freed (0 for process/service actions)"},
                                 "risk":            {"type": "string", "enum": ["safe", "low", "medium", "high"]},
                             },
-                            "required": ["title", "explanation", "risk", "estimated_bytes"],
+                            "required": ["title", "category", "explanation", "risk", "estimated_bytes"],
                         },
                     },
                 },
@@ -348,9 +480,11 @@ def run_scan(endpoint, api_key, model):
         {
             "role": "user",
             "content": (
-                "Analyze this Linux system and tell me what I can clean up to free disk space. "
-                "Start with disk_overview, use other tools as needed, "
-                "then call submit_recommendations."
+                "Do a full health scan of this Linux system. "
+                "Check both disk usage (what can be cleaned up) and system load "
+                "(heavy processes, zombies, failing services, anything abnormal). "
+                "Start with disk_overview and system_load, use all relevant tools, "
+                "then call submit_recommendations with findings from both areas."
             ),
         },
     ]

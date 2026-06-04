@@ -1231,7 +1231,7 @@ tui_ai_scan() {
   fi
 
   # Load recommendations into arrays
-  local -a titles=() explanations=() commands=() risks=() sizes=()
+  local -a titles=() explanations=() commands=() risks=() sizes=() categories=()
   local -a selected=()
   local i
   for (( i=0; i<rec_count; i++ )); do
@@ -1239,6 +1239,7 @@ tui_ai_scan() {
     explanations+=("$(_ai_rec_field "$raw" "$i" "explanation")")
     commands+=("$(_ai_rec_field "$raw" "$i" "command")")
     risks+=("$(_ai_rec_field "$raw" "$i" "risk")")
+    categories+=("$(_ai_rec_field "$raw" "$i" "category")")
     local bytes; bytes=$(_ai_rec_field "$raw" "$i" "estimated_bytes")
     sizes+=("$(_human_bytes_py "$bytes")")
     selected+=(false)
@@ -1255,12 +1256,21 @@ tui_ai_scan() {
     for (( i=0; i<rec_count; i++ )); do
       local mark; [[ "${selected[$i]}" == true ]] && mark="${GREEN}✓${NC}" || mark=" "
       local rc; rc=$(_risk_color "${risks[$i]}")
+      local cat_badge
+      case "${categories[$i]}" in
+        process) cat_badge="${YELLOW}[proc]${NC} " ;;
+        service) cat_badge="${YELLOW}[svc]${NC}  " ;;
+        memory)  cat_badge="${BLUE}[mem]${NC}  " ;;
+        *)       cat_badge="${DIM}[disk]${NC} " ;;
+      esac
       if (( i == cursor )); then
-        echo -e "  ${GREEN}❯${NC} [${mark}] ${BOLD}${titles[$i]}${NC}"
+        echo -e "  ${GREEN}❯${NC} [${mark}] ${cat_badge}${BOLD}${titles[$i]}${NC}"
       else
-        echo -e "    [${mark}] ${titles[$i]}"
+        echo -e "    [${mark}] ${cat_badge}${titles[$i]}"
       fi
-      echo -e "         ${DIM}${sizes[$i]} · risk: ${rc}${risks[$i]}${NC}"
+      local size_label="${sizes[$i]}"
+      [[ "${categories[$i]}" == "process" || "${categories[$i]}" == "service" ]] && size_label="—"
+      echo -e "               ${DIM}${size_label} · risk: ${rc}${risks[$i]}${NC}"
     done
 
     local sel_count=0
@@ -1279,7 +1289,9 @@ tui_ai_scan() {
           tui_clear; tui_header
           local rc; rc=$(_risk_color "${risks[$cursor]}")
           echo -e "  ${BOLD}${titles[$cursor]}${NC}\n"
-          echo -e "  ${DIM}Risk${NC}       ${rc}● ${risks[$cursor]}${NC}     ${DIM}Est. freed${NC}  ${sizes[$cursor]}"
+          local det_size="${sizes[$cursor]}"
+          [[ "${categories[$cursor]}" == "process" || "${categories[$cursor]}" == "service" ]] && det_size="—"
+          echo -e "  ${DIM}Category${NC}   ${categories[$cursor]:-disk}     ${DIM}Risk${NC}  ${rc}● ${risks[$cursor]}${NC}     ${DIM}Est. freed${NC}  ${det_size}"
           echo -e "  ${DIM}──────────────────────────────────────────────────────${NC}\n"
           echo -e "  ${DIM}What & why${NC}"
           echo "${explanations[$cursor]}" | fold -s -w 68 | sed 's/^/    /'
