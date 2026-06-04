@@ -1,4 +1,8 @@
-# cleanux
+```
+ ▄▄▄▄ ▄▄    ▄▄▄▄▄  ▄▄▄  ▄▄  ▄▄ ▄▄ ▄▄ ▄▄ ▄▄
+██▀▀▀ ██    ██▄▄  ██▀██ ███▄██ ██ ██ ▀█▄█▀
+▀████ ██▄▄▄ ██▄▄▄ ██▀██ ██ ▀██ ▀███▀ ██ ██
+```
 
 [![ShellCheck](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml)
 ![Version](https://img.shields.io/badge/version-2.1.20-blue)

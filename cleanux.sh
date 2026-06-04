@@ -507,14 +507,14 @@ tui_run() {
   FREED_TOTAL=0
   declare -gA MODULE_FREED=()
   _DISK_START=$(disk_kb)
-  clean_docker
-  clean_journal
-  clean_packages
-  clean_dev_caches
-  clean_snap
-  clean_core_dumps
-  clean_tmp
-  print_summary
+  clean_docker      || true
+  clean_journal     || true
+  clean_packages    || true
+  clean_dev_caches  || true
+  clean_snap        || true
+  clean_core_dumps  || true
+  clean_tmp         || true
+  print_summary     || true
   if [[ "$DRY_RUN" == false ]]; then
     local freed_human; freed_human=$(human_bytes "$FREED_TOTAL" 2>/dev/null || echo "0 B")
     notify "Cleanup complete — freed ${freed_human} — disk at $(disk_used_pct)%"
