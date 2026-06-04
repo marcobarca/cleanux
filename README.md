@@ -1,7 +1,7 @@
 # cleanux
 
 [![ShellCheck](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/marcobarca/cleanux/actions/workflows/shellcheck.yml)
-![Version](https://img.shields.io/badge/version-2.1.18-blue)
+![Version](https://img.shields.io/badge/version-2.1.19-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 AI-driven Linux server monitor and cleanup tool. Connect it to any OpenAI-compatible model and get a full picture of what's eating your disk, what's hammering your CPU, which processes are misbehaving, and what's worth cleaning — all explained in plain language, with a chat interface to go deeper on each finding.
