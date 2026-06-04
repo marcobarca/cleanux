@@ -40,6 +40,10 @@ LOG_MAX_MB=10           # rotate log when it exceeds N MB
 # Misc
 DISK_THRESHOLD=0
 ALL_USERS=false         # clean dev caches for all users in /home
+# AI scan
+AI_ENDPOINT=""          # OpenAI-compatible endpoint (e.g. http://localhost:11434/v1 for Ollama)
+AI_API_KEY=""           # API key — empty for local models
+AI_MODEL=""             # e.g. gpt-4o-mini, llama3, mistral
 
 # ── Runtime flags ─────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -780,9 +784,11 @@ tui_main() {
   local -a items=(
     "Run cleanup now"
     "Scan filesystem"
+    "AI scan"
     "Configure modules"
     "Configure schedule"
     "Configure notifications"
+    "Configure AI"
     "View log"
     "Update cleanux"
     "Exit"
@@ -811,21 +817,293 @@ tui_main() {
         case $selected in
           0) tui_run ;;
           1) tui_scan ;;
-          2) tui_modules ;;
-          3) tui_schedule ;;
-          4) tui_notifications ;;
-          5) tui_log ;;
-          6)
+          2) tui_ai_scan ;;
+          3) tui_modules ;;
+          4) tui_schedule ;;
+          5) tui_notifications ;;
+          6) tui_ai_config ;;
+          7) tui_log ;;
+          8)
             tput cnorm
             cmd_update
             echo -e "\n  ${DIM}Press any key to go back${NC}"
             read -r -s -n1
             tput civis
             ;;
-          7) tput cnorm; tput clear; exit 0 ;;
+          9) tput cnorm; tput clear; exit 0 ;;
         esac
         ;;
       q|Q) tput cnorm; tput clear; exit 0 ;;
+    esac
+  done
+}
+
+# ── AI scan ───────────────────────────────────────────────────────────────────
+
+ai_collect_context() {
+  echo "=== DISK USAGE ==="
+  df -h / 2>/dev/null | tail -1
+  echo ""
+
+  echo "=== TOP DIRECTORIES BY SIZE (/) ==="
+  du -sh /home /opt /var /tmp /root 2>/dev/null | sort -rh | head -10
+  echo ""
+
+  echo "=== LARGEST FILES (>50MB, not accessed in 7d) ==="
+  find /home /opt /var /tmp -maxdepth 6 -type f -size +50M -atime +7 \
+    ! -path "*/proc/*" ! -path "*/sys/*" 2>/dev/null \
+    -exec du -sh {} \; 2>/dev/null | sort -rh | head -20
+  echo ""
+
+  echo "=== DOCKER ==="
+  if has_cmd docker; then
+    docker system df 2>/dev/null || echo "(docker not available)"
+  else
+    echo "(docker not installed)"
+  fi
+  echo ""
+
+  echo "=== JOURNAL LOGS ==="
+  journalctl --disk-usage 2>/dev/null || echo "(journalctl not available)"
+  echo ""
+
+  echo "=== APT CACHE ==="
+  du -sh /var/cache/apt/archives 2>/dev/null || echo "(not available)"
+  echo ""
+
+  echo "=== SNAP REVISIONS ==="
+  if has_cmd snap; then
+    snap list --all 2>/dev/null | awk 'NR>1 && /disabled/{print}' | head -10
+  else
+    echo "(snap not installed)"
+  fi
+  echo ""
+
+  echo "=== LARGE LOG FILES ==="
+  find /var/log -type f -size +10M 2>/dev/null -exec du -sh {} \; | sort -rh | head -10
+  echo ""
+
+  echo "=== OLD TMP FILES ==="
+  find /tmp -maxdepth 2 -atime +7 2>/dev/null -exec du -sh {} \; 2>/dev/null | sort -rh | head -10
+  echo ""
+
+  echo "=== NODE_MODULES ==="
+  find /home /opt -name node_modules -type d -prune 2>/dev/null \
+    -exec du -sh {} \; | sort -rh | head -10
+  echo ""
+
+  echo "=== PYTHON CACHE ==="
+  find /home -name "__pycache__" -type d -prune 2>/dev/null \
+    -exec du -sh {} \; 2>/dev/null | sort -rh | head -10
+  echo ""
+}
+
+ai_query() {
+  local context="$1"
+  local endpoint="${AI_ENDPOINT:-https://api.openai.com/v1}"
+  local model="${AI_MODEL:-gpt-4o-mini}"
+
+  # strip trailing slash
+  endpoint="${endpoint%/}"
+
+  local prompt
+  prompt="You are a Linux system administrator. Analyze the following system information and provide concise, specific recommendations on what to clean up to free disk space.
+
+For each recommendation:
+- Be specific about the path or command
+- Estimate the space that could be recovered
+- Briefly explain why it is safe (or risky) to remove
+- Sort by impact (most space first)
+
+Do not use markdown headers or bullet symbols — use plain text with numbered points.
+Limit your response to the top 8 recommendations.
+
+SYSTEM INFO:
+${context}"
+
+  local payload
+  payload=$(printf '%s' "$prompt" | python3 -c "
+import sys, json
+content = sys.stdin.read()
+print(json.dumps({
+  'model': '${model}',
+  'messages': [{'role': 'user', 'content': content}],
+  'max_tokens': 1024,
+  'temperature': 0.2
+}))
+" 2>/dev/null)
+
+  if [[ -z "$payload" ]]; then
+    echo "ERROR: python3 is required to build the API request"
+    return 1
+  fi
+
+  local auth_header=""
+  [[ -n "$AI_API_KEY" ]] && auth_header="-H \"Authorization: Bearer ${AI_API_KEY}\""
+
+  local response
+  response=$(curl -s -f \
+    -H "Content-Type: application/json" \
+    ${AI_API_KEY:+-H "Authorization: Bearer ${AI_API_KEY}"} \
+    -d "$payload" \
+    "${endpoint}/chat/completions" 2>/dev/null)
+
+  if [[ -z "$response" ]]; then
+    echo "ERROR: No response from endpoint. Check AI_ENDPOINT and connectivity."
+    return 1
+  fi
+
+  # Extract content from response
+  local content
+  content=$(echo "$response" | python3 -c "
+import sys, json
+try:
+  r = json.load(sys.stdin)
+  if 'error' in r:
+    print('ERROR: ' + r['error'].get('message', str(r['error'])))
+  else:
+    print(r['choices'][0]['message']['content'])
+except Exception as e:
+  print('ERROR: Could not parse response — ' + str(e))
+" 2>/dev/null)
+
+  if [[ -z "$content" ]]; then
+    echo "ERROR: Could not parse API response."
+    return 1
+  fi
+
+  echo "$content"
+}
+
+tui_ai_config() {
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Configure AI scan${NC}\n"
+    echo -e "  Endpoint : ${DIM}${AI_ENDPOINT:-not set}${NC}"
+    echo -e "  API key  : ${DIM}${AI_API_KEY:+(set)}${AI_API_KEY:-not set}${NC}"
+    echo -e "  Model    : ${DIM}${AI_MODEL:-not set}${NC}\n"
+    echo -e "  ${DIM}Examples:${NC}"
+    echo -e "  ${DIM}  OpenAI  → https://api.openai.com/v1  /  gpt-4o-mini${NC}"
+    echo -e "  ${DIM}  Ollama  → http://localhost:11434/v1  /  llama3  (no key)${NC}\n"
+
+    local -a items=("Set endpoint" "Set API key" "Set model" "Clear all" "Back")
+    local sel=0
+    local nf=${#items[@]}
+
+    # Draw menu inline (no nested loop — just redraw on key)
+    local key; key=$(tui_read_key)
+
+    # Simple: show options with numbers, pick by arrow + enter via sub-loop
+    local cursor=0
+    while true; do
+      tui_clear
+      tui_header
+      echo -e "  ${BOLD}Configure AI scan${NC}\n"
+      echo -e "  Endpoint : ${DIM}${AI_ENDPOINT:-not set}${NC}"
+      echo -e "  API key  : ${DIM}${AI_API_KEY:+(set)}${AI_API_KEY:-not set}${NC}"
+      echo -e "  Model    : ${DIM}${AI_MODEL:-not set}${NC}\n"
+      echo -e "  ${DIM}OpenAI  → https://api.openai.com/v1 · gpt-4o-mini${NC}"
+      echo -e "  ${DIM}Ollama  → http://localhost:11434/v1  · llama3 (no key needed)${NC}\n"
+
+      for (( i=0; i<nf; i++ )); do
+        if (( i == cursor )); then
+          echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+        else
+          echo -e "    ${items[$i]}"
+        fi
+      done
+      echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
+
+      key=$(tui_read_key)
+      case "$key" in
+        $'\x1b[A'|k) (( cursor > 0 ))    && (( cursor-- )) || true ;;
+        $'\x1b[B'|j) (( cursor < nf-1 )) && (( cursor++ )) || true ;;
+        ''|$'\n'|$'\r')
+          tput cnorm
+          case $cursor in
+            0) echo -e "\n  ${BOLD}Endpoint${NC} (e.g. https://api.openai.com/v1):"
+               printf "  > "; read -r AI_ENDPOINT
+               conf_set AI_ENDPOINT "\"${AI_ENDPOINT}\"" ;;
+            1) echo -e "\n  ${BOLD}API key${NC} (leave empty for local models):"
+               printf "  > "; read -r -s AI_API_KEY; echo ""
+               conf_set AI_API_KEY "\"${AI_API_KEY}\"" ;;
+            2) echo -e "\n  ${BOLD}Model${NC} (e.g. gpt-4o-mini, llama3, mistral):"
+               printf "  > "; read -r AI_MODEL
+               conf_set AI_MODEL "\"${AI_MODEL}\"" ;;
+            3) AI_ENDPOINT=""; AI_API_KEY=""; AI_MODEL=""
+               conf_set AI_ENDPOINT '""'; conf_set AI_API_KEY '""'; conf_set AI_MODEL '""'
+               tui_flash "AI config cleared" ;;
+            4) tput civis; return ;;
+          esac
+          tput civis
+          ;;
+        q|Q|$'\x1b') return ;;
+      esac
+    done
+  done
+}
+
+tui_ai_scan() {
+  tui_clear
+  tui_header
+  echo -e "  ${BOLD}AI scan${NC}\n"
+
+  if [[ -z "$AI_ENDPOINT" ]]; then
+    echo -e "  ${YELLOW}⚠${NC}  No AI endpoint configured."
+    echo -e "  Go to ${BOLD}Configure AI${NC} from the main menu to set one.\n"
+    echo -e "  ${DIM}Press any key to go back${NC}"
+    tui_read_key > /dev/null
+    return
+  fi
+
+  echo -e "  ${DIM}Collecting system information...${NC}"
+  local context; context=$(ai_collect_context 2>/dev/null)
+
+  echo -e "  ${DIM}Querying ${AI_MODEL:-model} at ${AI_ENDPOINT}...${NC}"
+  echo -e "  ${YELLOW}⚠${NC}  ${DIM}System paths and sizes will be sent to the configured endpoint.${NC}\n"
+
+  local response; response=$(ai_query "$context")
+
+  if [[ "$response" == ERROR:* ]]; then
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}AI scan${NC}\n"
+    echo -e "  ${RED}✖${NC}  ${response#ERROR: }\n"
+    echo -e "  ${DIM}Press any key to go back${NC}"
+    tui_read_key > /dev/null
+    return
+  fi
+
+  # Split response into lines for scrollable display
+  local -a lines=()
+  while IFS= read -r line; do
+    lines+=("$line")
+  done <<< "$response"
+
+  local total=${#lines[@]}
+  local page_size=16
+  local offset=0
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}AI scan${NC}   ${DIM}${AI_MODEL:-model} · ${AI_ENDPOINT}${NC}\n"
+
+    local end=$(( offset + page_size ))
+    (( end > total )) && end=$total
+
+    for (( i=offset; i<end; i++ )); do
+      echo -e "  ${lines[$i]}"
+    done
+
+    echo -e "\n  ${DIM}${end}/${total} lines   ↑↓ scroll   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( offset > 0 )) && (( offset -= page_size )) || true; (( offset < 0 )) && offset=0 || true ;;
+      $'\x1b[B'|j) (( offset + page_size < total )) && (( offset += page_size )) || true ;;
+      q|Q|$'\x1b') return ;;
     esac
   done
 }
@@ -1270,6 +1548,20 @@ parse_args() {
       --enable-thumbnails)     THUMBNAIL_CACHE=true ;;
       --html-report)           HTML_REPORT=true ;;
       --update)                cmd_update; exit 0 ;;
+      --ai-scan)
+        # shellcheck source=/dev/null
+        [[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
+        if [[ -z "$AI_ENDPOINT" ]]; then
+          warn "AI_ENDPOINT not set. Configure it in ${CONF_FILE} or via the TUI."
+          exit 1
+        fi
+        echo -e "\n${BOLD}AI scan${NC}\n"
+        echo -e "${DIM}Collecting system info...${NC}"
+        local ctx; ctx=$(ai_collect_context 2>/dev/null)
+        echo -e "${DIM}Querying ${AI_MODEL:-model}...${NC}\n"
+        ai_query "$ctx"
+        echo ""
+        exit 0 ;;
       --scan)
         # shellcheck source=/dev/null
         [[ -f "$CONF_FILE" ]] && source "$CONF_FILE"

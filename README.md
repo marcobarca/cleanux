@@ -14,6 +14,28 @@ curl -fsSL https://raw.githubusercontent.com/marcobarca/cleanux/main/install.sh 
 
 Then run `cleanux` to open the interactive menu.
 
+## AI scan
+
+cleanux can connect to any OpenAI-compatible endpoint and ask an AI to analyze your system and suggest what to clean up.
+
+Configure from the TUI → **Configure AI**, or directly in `/etc/cleanux.conf`:
+
+```bash
+AI_ENDPOINT="https://api.openai.com/v1"   # or http://localhost:11434/v1 for Ollama
+AI_API_KEY="sk-..."                        # leave empty for local models
+AI_MODEL="gpt-4o-mini"
+```
+
+Then launch from the TUI → **AI scan**, or:
+
+```bash
+cleanux --ai-scan
+```
+
+The AI receives disk usage, large files, Docker stats, log sizes, and dev cache info. It only produces recommendations — nothing is deleted automatically. Requires `python3` and `curl`.
+
+---
+
 ## What it deletes
 
 - **Docker** — build cache, stopped containers, dangling images, unused volumes *(opt-in)*
