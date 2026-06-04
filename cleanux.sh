@@ -99,9 +99,15 @@ run_or_dry() {
   local desc="$1"; shift
   if [[ "$DRY_RUN" == true ]]; then
     dry "$desc → $*"
+    return 0
   else
     log "$desc"
-    "$@" >> "$LOG_FILE" 2>&1 || warn "$desc failed (see $LOG_FILE)"
+    if "$@" >> "$LOG_FILE" 2>&1; then
+      return 0
+    else
+      warn "$desc failed (see $LOG_FILE)"
+      return 1
+    fi
   fi
 }
 
@@ -227,7 +233,9 @@ tui_header() {
   local free; free=$(disk_free_human)
   local color=$GREEN
   (( pct >= 90 )) && color=$RED || (( pct >= 75 )) && color=$YELLOW
-  echo -e "  ${BOLD}cleanux${NC} v${VERSION}   ${DIM}disk: ${color}${pct}%${NC}${DIM} · ${free} free${NC}\n"
+  echo -e "  ${BOLD}cleanux${NC} v${VERSION}   ${DIM}disk: ${color}${pct}%${NC}${DIM} · ${free} free${NC}"
+  [[ $EUID -ne 0 ]] && echo -e "  ${YELLOW}⚠${NC}  ${DIM}Not running as root — apt, journalctl and snap may fail${NC}"
+  echo ""
 }
 
 tui_flash() {
@@ -638,19 +646,22 @@ clean_packages() {
     apt)
       if [[ "$APT_CLEAN" == true ]]; then
         info "Cleaning APT cache..."
-        run_or_dry "apt-get clean" apt-get clean -qq
-        [[ "$DRY_RUN" == false ]] && ok "APT cache cleared"
+        if run_or_dry "apt-get clean" apt-get clean -qq; then
+          [[ "$DRY_RUN" == false ]] && ok "APT cache cleared"
+        fi
       fi
       if [[ "$APT_AUTOREMOVE" == true ]]; then
         info "Removing unused packages..."
-        run_or_dry "apt-get autoremove" apt-get autoremove -y -qq
-        [[ "$DRY_RUN" == false ]] && ok "Unused packages removed"
+        if run_or_dry "apt-get autoremove" apt-get autoremove -y -qq; then
+          [[ "$DRY_RUN" == false ]] && ok "Unused packages removed"
+        fi
       fi
       ;;
     dnf|yum)
       info "Cleaning $mgr cache..."
-      run_or_dry "$mgr clean" "$mgr" clean all -q
-      [[ "$DRY_RUN" == false ]] && ok "$mgr cache cleared"
+      if run_or_dry "$mgr clean" "$mgr" clean all -q; then
+        [[ "$DRY_RUN" == false ]] && ok "$mgr cache cleared"
+      fi
       ;;
     pacman)
       info "Cleaning pacman cache..."
@@ -660,13 +671,13 @@ clean_packages() {
       ;;
     brew)
       info "Running brew cleanup..."
-      run_or_dry "brew cleanup" brew cleanup --prune=all
-      if [[ "$DRY_RUN" == false ]]; then
-        ok "Homebrew cache cleared"
-        if has_cmd brew && [[ -f "Brewfile" ]]; then
-          info "Removing formulae not in Brewfile..."
-          run_or_dry "brew bundle cleanup" brew bundle cleanup --force
-          ok "Brewfile cleanup done"
+      if run_or_dry "brew cleanup" brew cleanup --prune=all; then
+        if [[ "$DRY_RUN" == false ]]; then
+          ok "Homebrew cache cleared"
+          if has_cmd brew && [[ -f "Brewfile" ]]; then
+            info "Removing formulae not in Brewfile..."
+            run_or_dry "brew bundle cleanup" brew bundle cleanup --force && ok "Brewfile cleanup done" || true
+          fi
         fi
       fi
       ;;
