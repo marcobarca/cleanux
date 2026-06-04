@@ -872,7 +872,7 @@ tui_main() {
           4) tui_log ;;
           5)
             tput cnorm
-            cmd_update
+            cmd_update || true
             echo -e "\n  ${DIM}Press any key to go back${NC}"
             read -r -s -n1
             tput civis
@@ -1283,7 +1283,7 @@ cmd_update() {
 
   if ! has_cmd curl; then
     warn "curl is required for updates"
-    return 1
+    return 0
   fi
 
   echo -e "\n${BOLD}cleanux update${NC}\n"
@@ -1293,7 +1293,7 @@ cmd_update() {
   if ! curl -fsSL "$REMOTE_URL" -o "$tmp" 2>/dev/null; then
     warn "Could not reach GitHub. Check your connection."
     rm -f "$tmp"
-    return 1
+    return 0
   fi
 
   local remote_version
@@ -1302,7 +1302,7 @@ cmd_update() {
   if [[ -z "$remote_version" ]]; then
     warn "Could not determine remote version."
     rm -f "$tmp"
-    return 1
+    return 0
   fi
 
   if [[ "$remote_version" == "$VERSION" ]]; then
