@@ -777,6 +777,42 @@ tui_scan() {
   done
 }
 
+tui_configure() {
+  local -a items=("Modules" "Schedule" "Notifications" "AI" "Back")
+  local cursor=0
+  local n=${#items[@]}
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Configure${NC}\n"
+    for (( i=0; i<n; i++ )); do
+      if (( i == cursor )); then
+        echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+      else
+        echo -e "    ${items[$i]}"
+      fi
+    done
+    echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( cursor > 0 ))   && (( cursor-- )) || true ;;
+      $'\x1b[B'|j) (( cursor < n-1 )) && (( cursor++ )) || true ;;
+      ''|$'\n'|$'\r')
+        case $cursor in
+          0) tui_modules ;;
+          1) tui_schedule ;;
+          2) tui_notifications ;;
+          3) tui_ai_config ;;
+          4) return ;;
+        esac
+        ;;
+      q|Q|$'\x1b') return ;;
+    esac
+  done
+}
+
 tui_main() {
   tput civis
   trap 'tput cnorm; tput clear' EXIT INT TERM
@@ -785,10 +821,7 @@ tui_main() {
     "Run cleanup now"
     "Scan filesystem"
     "AI scan"
-    "Configure modules"
-    "Configure schedule"
-    "Configure notifications"
-    "Configure AI"
+    "Configure"
     "View log"
     "Update cleanux"
     "Exit"
@@ -818,19 +851,16 @@ tui_main() {
           0) tui_run ;;
           1) tui_scan ;;
           2) tui_ai_scan ;;
-          3) tui_modules ;;
-          4) tui_schedule ;;
-          5) tui_notifications ;;
-          6) tui_ai_config ;;
-          7) tui_log ;;
-          8)
+          3) tui_configure ;;
+          4) tui_log ;;
+          5)
             tput cnorm
             cmd_update
             echo -e "\n  ${DIM}Press any key to go back${NC}"
             read -r -s -n1
             tput civis
             ;;
-          9) tput cnorm; tput clear; exit 0 ;;
+          6) tput cnorm; tput clear; exit 0 ;;
         esac
         ;;
       q|Q) tput cnorm; tput clear; exit 0 ;;
