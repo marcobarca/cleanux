@@ -11,6 +11,34 @@ It runs either manually or on a schedule, and has a `--dry-run` mode that shows 
 
 ---
 
+## Install and run
+
+**1. Install**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marcobarca/cleanux/main/install.sh | sudo bash
+```
+
+This copies `cleanux` to `/usr/local/bin` and creates a default config at `/etc/cleanux.conf`.
+
+**2. Launch**
+
+```bash
+cleanux
+```
+
+That's it. An interactive menu opens where you can configure modules, set a schedule, and run the cleanup — no need to remember any flags.
+
+**3. Done**
+
+From that point on, if you set up a schedule from the menu, cleanux runs automatically in the background. You don't need to do anything else.
+
+---
+
+> If you want to skip the menu and run directly: `sudo cleanux --dry-run` to preview, `sudo cleanux -q` for a silent run.
+
+---
+
 ## What it deletes
 
 **Docker**
