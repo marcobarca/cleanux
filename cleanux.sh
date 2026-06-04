@@ -237,6 +237,18 @@ conf_set() {
 
 tui_clear() { tput clear 2>/dev/null || printf '\033[2J\033[H'; }
 
+tui_splash() {
+  tui_clear
+  echo ""
+  echo -e "  ${GREEN}▄▄▄▄ ▄▄    ▄▄▄▄▄  ▄▄▄  ▄▄  ▄▄ ▄▄ ▄▄ ▄▄ ▄▄${NC}"
+  echo -e "  ${GREEN}██▀▀▀ ██    ██▄▄  ██▀██ ███▄██ ██ ██ ▀█▄█▀${NC}"
+  echo -e "  ${GREEN}▀████ ██▄▄▄ ██▄▄▄ ██▀██ ██ ▀██ ▀███▀ ██ ██${NC}"
+  echo ""
+  echo -e "  ${DIM}v${VERSION} · server cleanup tool${NC}"
+  echo ""
+  sleep 1
+}
+
 tui_header() {
   local pct; pct=$(disk_used_pct)
   local free; free=$(disk_free_human)
@@ -820,6 +832,7 @@ tui_configure() {
 tui_main() {
   tput civis
   trap 'tput cnorm; tput clear' EXIT INT TERM
+  tui_splash
 
   local -a items=(
     "Run cleanup now"
