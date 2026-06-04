@@ -793,8 +793,44 @@ tui_scan() {
   done
 }
 
+tui_manual_cleanup() {
+  local -a items=("Run now" "Schedule" "Notifications" "Cleanup settings" "Back")
+  local cursor=0
+  local n=${#items[@]}
+
+  while true; do
+    tui_clear
+    tui_header
+    echo -e "  ${BOLD}Manual cleanup${NC}\n"
+    for (( i=0; i<n; i++ )); do
+      if (( i == cursor )); then
+        echo -e "  ${GREEN}❯${NC} ${BOLD}${items[$i]}${NC}"
+      else
+        echo -e "    ${items[$i]}"
+      fi
+    done
+    echo -e "\n  ${DIM}↑↓ navigate   Enter select   q back${NC}"
+
+    local key; key=$(tui_read_key)
+    case "$key" in
+      $'\x1b[A'|k) (( cursor > 0 ))   && (( cursor-- )) || true ;;
+      $'\x1b[B'|j) (( cursor < n-1 )) && (( cursor++ )) || true ;;
+      ''|$'\n'|$'\r')
+        case $cursor in
+          0) tui_run ;;
+          1) tui_schedule ;;
+          2) tui_notifications ;;
+          3) tui_modules ;;
+          4) return ;;
+        esac
+        ;;
+      q|Q|$'\x1b') return ;;
+    esac
+  done
+}
+
 tui_configure() {
-  local -a items=("Modules" "Schedule" "Notifications" "AI" "View log" "Update cleanux" "Back")
+  local -a items=("AI" "View log" "Update cleanux" "Back")
   local cursor=0
   local n=${#items[@]}
 
@@ -817,19 +853,16 @@ tui_configure() {
       $'\x1b[B'|j) (( cursor < n-1 )) && (( cursor++ )) || true ;;
       ''|$'\n'|$'\r')
         case $cursor in
-          0) tui_modules ;;
-          1) tui_schedule ;;
-          2) tui_notifications ;;
-          3) tui_ai_config ;;
-          4) tui_log ;;
-          5)
+          0) tui_ai_config ;;
+          1) tui_log ;;
+          2)
             tput cnorm
             cmd_update || true
             echo -e "\n  ${DIM}Press any key to go back${NC}"
             read -r -s -n1
             tput civis
             ;;
-          6) return ;;
+          3) return ;;
         esac
         ;;
       q|Q|$'\x1b') return ;;
@@ -846,7 +879,6 @@ tui_main() {
     "AI disk scan"
     "AI health scan"
     "Manual cleanup"
-    "Scan filesystem"
     "Settings & Tools"
     "Exit"
   )
@@ -874,10 +906,9 @@ tui_main() {
         case $idx in
           0) tui_ai_scan "disk" ;;
           1) tui_ai_scan "health" ;;
-          2) tui_run ;;
-          3) tui_scan ;;
-          4) tui_configure ;;
-          5) tput cnorm; tput clear; exit 0 ;;
+          2) tui_manual_cleanup ;;
+          3) tui_configure ;;
+          4) tput cnorm; tput clear; exit 0 ;;
         esac
         ;;
       q|Q) tput cnorm; tput clear; exit 0 ;;
